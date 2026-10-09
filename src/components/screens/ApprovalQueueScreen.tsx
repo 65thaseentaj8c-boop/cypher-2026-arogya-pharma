@@ -20,6 +20,8 @@ interface ApprovalQueueScreenProps {
   ) => void;
   onNavigate: (tab: NavigationTab) => void;
   onResetDemo?: () => void;
+  onCleanupDuplicates?: () => void;
+  onDismissRequest?: (id: string) => void;
 }
 
 export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
@@ -27,12 +29,29 @@ export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
   onDecision,
   onNavigate,
   onResetDemo,
+  onCleanupDuplicates,
+  onDismissRequest,
 }) => {
   const [activeItem, setActiveItem] = useState<{
     request: ApprovalRequest;
     decision: 'approved' | 'rejected';
   } | null>(null);
   const [decisionNotes, setDecisionNotes] = useState('');
+
+  // Identify duplicate pending requests based on stable key (batchId + requestType)
+  const pendingMap = new Map<string, string>(); // key -> primary request ID
+  const duplicatePendingIds = new Set<string>();
+
+  approvals.forEach((req) => {
+    if (req.status === 'pending') {
+      const key = `${req.batchId.trim().toUpperCase()}_${req.requestType.trim().toUpperCase()}`;
+      if (pendingMap.has(key)) {
+        duplicatePendingIds.add(req.id);
+      } else {
+        pendingMap.set(key, req.id);
+      }
+    }
+  });
 
   const handleOpenDecision = (
     request: ApprovalRequest,
@@ -74,7 +93,17 @@ export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          {onCleanupDuplicates && duplicatePendingIds.size > 0 && (
+            <button
+              type="button"
+              onClick={onCleanupDuplicates}
+              className="px-2.5 py-1 text-xs font-bold text-amber-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded transition-colors"
+              title="Clean up duplicate pending requests while keeping primary requests"
+            >
+              Clean Up {duplicatePendingIds.size} Duplicate(s)
+            </button>
+          )}
           {onResetDemo && (
             <button
               type="button"
@@ -92,16 +121,41 @@ export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
         </div>
       </div>
 
+      {/* Duplicate Alert Banner */}
+      {duplicatePendingIds.size > 0 && (
+        <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+            <span>
+              <strong>Duplicate Submissions Detected:</strong> {duplicatePendingIds.size} redundant pending request(s) found in queue ({Array.from(duplicatePendingIds).join(', ')}). Primary requests remain active.
+            </span>
+          </div>
+          {onCleanupDuplicates && (
+            <button
+              onClick={onCleanupDuplicates}
+              className="px-3 py-1 bg-amber-700 hover:bg-amber-800 text-white font-bold rounded text-xs shrink-0 transition-colors"
+            >
+              Clean Up Duplicates Now
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Approval Requests Cards */}
       <div className="space-y-4">
         {approvals.map((req) => {
           const isPending = req.status === 'pending';
+          const isDuplicate = duplicatePendingIds.has(req.id);
+          const key = `${req.batchId.trim().toUpperCase()}_${req.requestType.trim().toUpperCase()}`;
+          const primaryId = pendingMap.get(key);
 
           return (
             <div
               key={req.id}
               className={`bg-white rounded-lg border shadow-sm p-5 space-y-4 text-xs transition-all ${
-                req.status === 'approved'
+                isDuplicate
+                  ? 'border-amber-300 bg-amber-50/20'
+                  : req.status === 'approved'
                   ? 'border-emerald-300 bg-emerald-50/10'
                   : req.status === 'rejected'
                   ? 'border-rose-300 bg-rose-50/10'
@@ -122,6 +176,11 @@ export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
                   </button>
                   <span className="font-bold text-slate-800">{req.requestType}</span>
                   <SeverityBadge severity={req.urgency} />
+                  {isDuplicate && (
+                    <span className="text-[10px] font-bold text-amber-900 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded">
+                      Suspected Duplicate (Primary: {primaryId})
+                    </span>
+                  )}
                 </div>
 
                 <div>
@@ -135,9 +194,14 @@ export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
                       <XCircle className="w-3.5 h-3.5" /> REJECTED
                     </span>
                   )}
-                  {req.status === 'pending' && (
+                  {req.status === 'pending' && !isDuplicate && (
                     <span className="inline-flex items-center gap-1 font-bold text-amber-800 bg-amber-100 border border-amber-300 px-2.5 py-0.5 rounded">
                       <Clock className="w-3.5 h-3.5" /> PENDING QA REVIEW
+                    </span>
+                  )}
+                  {req.status === 'pending' && isDuplicate && (
+                    <span className="inline-flex items-center gap-1 font-bold text-amber-900 bg-amber-200 border border-amber-400 px-2.5 py-0.5 rounded">
+                      <AlertTriangle className="w-3.5 h-3.5" /> DUPLICATE PENDING
                     </span>
                   )}
                 </div>
@@ -178,19 +242,32 @@ export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
 
               {/* Action Buttons */}
               {isPending && (
-                <div className="pt-2 flex items-center justify-end gap-3 border-t border-slate-100">
-                  <button
-                    onClick={() => handleOpenDecision(req, 'rejected')}
-                    className="px-3.5 py-1.5 text-xs font-semibold text-rose-700 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded transition-colors flex items-center gap-1.5"
-                  >
-                    <XCircle className="w-3.5 h-3.5" /> Reject Request
-                  </button>
-                  <button
-                    onClick={() => handleOpenDecision(req, 'approved')}
-                    className="px-4 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded transition-colors flex items-center gap-1.5 shadow-xs"
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5" /> Authorize & Sign
-                  </button>
+                <div className="pt-2 flex items-center justify-between gap-3 border-t border-slate-100">
+                  <div>
+                    {isDuplicate && onDismissRequest && (
+                      <button
+                        type="button"
+                        onClick={() => onDismissRequest(req.id)}
+                        className="px-2.5 py-1 text-xs font-semibold text-amber-900 hover:text-amber-950 bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded transition-colors"
+                      >
+                        Dismiss Duplicate
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => handleOpenDecision(req, 'rejected')}
+                      className="px-3.5 py-1.5 text-xs font-semibold text-rose-700 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded transition-colors flex items-center gap-1.5"
+                    >
+                      <XCircle className="w-3.5 h-3.5" /> Reject Request
+                    </button>
+                    <button
+                      onClick={() => handleOpenDecision(req, 'approved')}
+                      className="px-4 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded transition-colors flex items-center gap-1.5 shadow-xs"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Authorize & Sign
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

@@ -7,7 +7,7 @@ import {
   ShoppingCart,
   Sparkles,
 } from 'lucide-react';
-import type { AIRecommendation, NavigationTab } from '../../types';
+import type { AIRecommendation, ApprovalRequest, NavigationTab } from '../../types';
 import { DemoBadge } from '../common/DemoBadge';
 import { Modal } from '../common/Modal';
 
@@ -15,23 +15,32 @@ interface RecommendationsScreenProps {
   recommendations: AIRecommendation[];
   onNavigate: (tab: NavigationTab) => void;
   onSubmitToQA: (rec: AIRecommendation) => void;
+  approvals?: ApprovalRequest[];
 }
 
 export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
   recommendations,
   onNavigate,
   onSubmitToQA,
+  approvals = [],
 }) => {
   const [submittedIds, setSubmittedIds] = useState<string[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPoModalOpen, setIsPoModalOpen] = useState(false);
   const [poUnits, setPoUnits] = useState('600');
   const [poSupplier, setPoSupplier] = useState('Arogya Formulation Works (Ahmedabad Unit)');
   const [poNotes, setPoNotes] = useState('Urgent PO drafted due to B2231 recall and B2240 reserve deficit (400 units vs 940 units total demand). Hospital ICUs prioritized.');
   const [poSubmitted, setPoSubmitted] = useState(false);
 
-  const handleSubmit = (rec: AIRecommendation) => {
-    setSubmittedIds((prev) => [...prev, rec.id]);
-    onSubmitToQA(rec);
+  const handleSubmit = async (rec: AIRecommendation) => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      setSubmittedIds((prev) => [...prev, rec.id]);
+      await onSubmitToQA(rec);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handlePoSubmit = () => {
@@ -228,7 +237,14 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
       {/* Advisory Cards List */}
       <div className="space-y-5">
         {recommendations.map((rec) => {
-          const isSubmitted = submittedIds.includes(rec.id);
+          const targetType = rec.actionType === 'Quarantine' ? 'Quarantine Order' : 'Recall Authorization';
+          const existingPending = approvals.find(
+            (a) =>
+              a.status === 'pending' &&
+              a.batchId.toUpperCase() === rec.batchId.toUpperCase() &&
+              a.requestType.toLowerCase() === targetType.toLowerCase()
+          );
+          const isSubmitted = submittedIds.includes(rec.id) || !!existingPending;
 
           return (
             <div
@@ -319,15 +335,16 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
                     {isSubmitted ? (
                       <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded">
                         <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                        Dispatched to QA Approval Queue
+                        {existingPending ? `Pending QA Sign-Off (${existingPending.id})` : 'Dispatched to QA Approval Queue'}
                       </span>
                     ) : (
                       <button
                         onClick={() => handleSubmit(rec)}
-                        className="bg-teal-700 hover:bg-teal-800 text-white font-semibold text-xs px-4 py-2 rounded-md shadow-xs flex items-center gap-1.5 transition-colors"
+                        disabled={isSubmitting}
+                        className="bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white font-semibold text-xs px-4 py-2 rounded-md shadow-xs flex items-center gap-1.5 transition-colors"
                       >
                         <FileCheck2 className="w-4 h-4" />
-                        Submit Order to QA Approval Queue
+                        {isSubmitting ? 'Submitting...' : 'Submit Order to QA Approval Queue'}
                       </button>
                     )}
                   </div>

@@ -552,11 +552,71 @@ export const pharmacyService = {
 
   /**
    * Add a new approval request (e.g. when recommendation dispatched)
+   * Enforces stable duplicate prevention based on batch ID & request type for active pending requests.
    */
   async addApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest> {
     await delay();
+    const queue = await this.getApprovalQueue();
+
+    const cleanBatchId = (request.batchId || '').trim().toUpperCase();
+    const cleanType = (request.requestType || '').trim().toUpperCase();
+
+    // Check if an equivalent pending request already exists in the approval queue
+    const existingPending = queue.find(
+      (a) =>
+        a.status === 'pending' &&
+        a.batchId.trim().toUpperCase() === cleanBatchId &&
+        a.requestType.trim().toUpperCase() === cleanType
+    );
+
+    if (existingPending) {
+      throw new Error(
+        `An equivalent pending ${request.requestType} already exists for Batch ${request.batchId} (Request ID: ${existingPending.id}). Duplicate submission prevented.`
+      );
+    }
+
     inMemoryApprovals = [request, ...inMemoryApprovals];
     return { ...request };
+  },
+
+  /**
+   * Remove a single approval request by ID
+   */
+  async removeApprovalRequest(id: string): Promise<boolean> {
+    await delay();
+    const idx = inMemoryApprovals.findIndex((a) => a.id === id);
+    if (idx !== -1) {
+      inMemoryApprovals.splice(idx, 1);
+      return true;
+    }
+    return false;
+  },
+
+  /**
+   * Safely clean up duplicate pending requests while preserving primary pending requests and all historical decisions.
+   */
+  async cleanupDuplicatePendingRequests(): Promise<string[]> {
+    await delay();
+    const queue = await this.getApprovalQueue();
+    const seenPendingKeys = new Set<string>();
+    const removedIds: string[] = [];
+
+    for (const req of queue) {
+      if (req.status === 'pending') {
+        const key = `${req.batchId.trim().toUpperCase()}_${req.requestType.trim().toUpperCase()}`;
+        if (seenPendingKeys.has(key)) {
+          removedIds.push(req.id);
+        } else {
+          seenPendingKeys.add(key);
+        }
+      }
+    }
+
+    if (removedIds.length > 0) {
+      inMemoryApprovals = inMemoryApprovals.filter((req) => !removedIds.includes(req.id));
+    }
+
+    return removedIds;
   },
 
   /**

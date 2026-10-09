@@ -73,26 +73,61 @@ export function App() {
 
   // Handle recommendation dispatch to QA queue
   const handleSubmitRecommendationToQA = async (rec: AIRecommendation) => {
-    const newApproval: ApprovalRequest = {
-      id: `APP-${Date.now().toString().slice(-4)}`,
-      batchId: rec.batchId,
-      title: `${rec.actionType}: ${rec.title}`,
-      requestType: rec.actionType === 'Quarantine' ? 'Quarantine Order' : 'Recall Authorization',
-      submittedBy: 'AI Risk Agent (Auto-Dispatched)',
-      submittedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' IST',
-      urgency: 'critical',
-      summary: rec.rationale,
-      regulatoryReference: 'CDSCO / WHO TRS 961 Schedule M Protocol',
-      status: 'pending',
-    };
+    try {
+      const newApproval: ApprovalRequest = {
+        id: `APP-${Date.now().toString().slice(-4)}`,
+        batchId: rec.batchId,
+        title: `${rec.actionType}: ${rec.title}`,
+        requestType: rec.actionType === 'Quarantine' ? 'Quarantine Order' : 'Recall Authorization',
+        submittedBy: 'AI Risk Agent (Auto-Dispatched)',
+        submittedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' IST',
+        urgency: 'critical',
+        summary: rec.rationale,
+        regulatoryReference: 'CDSCO / WHO TRS 961 Schedule M Protocol',
+        status: 'pending',
+      };
 
-    await pharmacyService.addApprovalRequest(newApproval);
-    setApprovals((prev) => [newApproval, ...prev]);
-    setMetrics((prev) => ({
-      ...prev,
-      pendingApprovals: prev.pendingApprovals + 1,
-    }));
-    showToast(`Advisory submitted! Created Approval Order ${newApproval.id} for Batch ${rec.batchId}`);
+      const added = await pharmacyService.addApprovalRequest(newApproval);
+      const [updatedApprovals, updatedMetrics] = await Promise.all([
+        pharmacyService.getApprovalQueue(),
+        pharmacyService.getDashboardMetrics(),
+      ]);
+      setApprovals(updatedApprovals);
+      setMetrics(updatedMetrics);
+      showToast(`Advisory submitted! Created Approval Order ${added.id} for Batch ${rec.batchId}`);
+    } catch (err: any) {
+      showToast(err.message || 'Duplicate submission prevented.');
+    }
+  };
+
+  // Handle explicit cleanup of duplicate pending requests
+  const handleCleanupDuplicates = async () => {
+    const removedIds = await pharmacyService.cleanupDuplicatePendingRequests();
+    if (removedIds.length > 0) {
+      const [updatedApprovals, updatedMetrics] = await Promise.all([
+        pharmacyService.getApprovalQueue(),
+        pharmacyService.getDashboardMetrics(),
+      ]);
+      setApprovals(updatedApprovals);
+      setMetrics(updatedMetrics);
+      showToast(`Cleaned up ${removedIds.length} duplicate pending request(s): ${removedIds.join(', ')}.`);
+    } else {
+      showToast('No duplicate pending requests found.');
+    }
+  };
+
+  // Handle single duplicate request dismissal
+  const handleRemoveApprovalRequest = async (id: string) => {
+    const removed = await pharmacyService.removeApprovalRequest(id);
+    if (removed) {
+      const [updatedApprovals, updatedMetrics] = await Promise.all([
+        pharmacyService.getApprovalQueue(),
+        pharmacyService.getDashboardMetrics(),
+      ]);
+      setApprovals(updatedApprovals);
+      setMetrics(updatedMetrics);
+      showToast(`Dismissed duplicate request ${id}.`);
+    }
   };
 
   // Handle QA decision on approval item
@@ -217,6 +252,7 @@ export function App() {
               recommendations={recommendations}
               onNavigate={setCurrentTab}
               onSubmitToQA={handleSubmitRecommendationToQA}
+              approvals={approvals}
             />
           )}
 
@@ -225,6 +261,8 @@ export function App() {
               approvals={approvals}
               onDecision={handleDecision}
               onResetDemo={handleResetDemo}
+              onCleanupDuplicates={handleCleanupDuplicates}
+              onDismissRequest={handleRemoveApprovalRequest}
               onNavigate={setCurrentTab}
             />
           )}
