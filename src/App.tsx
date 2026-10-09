@@ -72,7 +72,7 @@ export function App() {
   }, []);
 
   // Handle recommendation dispatch to QA queue
-  const handleSubmitRecommendationToQA = (rec: AIRecommendation) => {
+  const handleSubmitRecommendationToQA = async (rec: AIRecommendation) => {
     const newApproval: ApprovalRequest = {
       id: `APP-${Date.now().toString().slice(-4)}`,
       batchId: rec.batchId,
@@ -86,6 +86,7 @@ export function App() {
       status: 'pending',
     };
 
+    await pharmacyService.addApprovalRequest(newApproval);
     setApprovals((prev) => [newApproval, ...prev]);
     setMetrics((prev) => ({
       ...prev,

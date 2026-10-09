@@ -40,8 +40,71 @@ import {
   sanitizeRegisterBatchInput,
 } from './batchValidation';
 
-// Mutable in-memory store simulating local database
-let inMemoryBatches: BatchItem[] = [...MOCK_BATCHES];
+export const APPROVAL_STORAGE_KEY = 'arogya_pharma_approval_decisions_v1';
+
+export interface SavedApprovalDecision {
+  id: string;
+  status: 'approved' | 'rejected';
+  decidedBy: string;
+  decidedAt: string;
+  decisionNotes: string;
+}
+
+const memoryStorageMock: Record<string, string> = {};
+
+function getStorage(): Storage | null {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    return window.localStorage;
+  }
+  if (typeof localStorage !== 'undefined' && localStorage) {
+    return localStorage;
+  }
+  return {
+    getItem: (key: string) => memoryStorageMock[key] || null,
+    setItem: (key: string, val: string) => { memoryStorageMock[key] = val; },
+    removeItem: (key: string) => { delete memoryStorageMock[key]; },
+    clear: () => { Object.keys(memoryStorageMock).forEach(k => delete memoryStorageMock[k]); },
+    length: Object.keys(memoryStorageMock).length,
+    key: (i: number) => Object.keys(memoryStorageMock)[i] || null,
+  };
+}
+
+export function getStoredApprovalDecisions(): Record<string, SavedApprovalDecision> {
+  try {
+    const storage = getStorage();
+    if (!storage) return {};
+    const raw = storage.getItem(APPROVAL_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return {};
+    return parsed as Record<string, SavedApprovalDecision>;
+  } catch (err) {
+    console.warn('Failed to parse approval decisions from localStorage:', err);
+    return {};
+  }
+}
+
+export function saveStoredApprovalDecision(decision: SavedApprovalDecision): void {
+  try {
+    const storage = getStorage();
+    if (!storage) return;
+    const current = getStoredApprovalDecisions();
+    current[decision.id] = decision;
+    storage.setItem(APPROVAL_STORAGE_KEY, JSON.stringify(current));
+  } catch (err) {
+    console.warn('Failed to save approval decision to localStorage:', err);
+  }
+}
+
+// Mutable in-memory stores simulating local database
+let inMemoryBatches: BatchItem[] = MOCK_BATCHES.map((b) => ({ ...b }));
+let inMemoryApprovals: ApprovalRequest[] = MOCK_APPROVALS.map((a) => ({
+  ...a,
+  status: 'pending',
+  decidedAt: undefined,
+  decidedBy: undefined,
+  decisionNotes: undefined,
+}));
 let trackedBatchesCount = MOCK_METRICS.totalTrackedBatches;
 
 // Simulated slight async latency for realistic frontend loading states
@@ -50,11 +113,24 @@ const delay = (ms = LATENCY_MS) => new Promise((resolve) => setTimeout(resolve, 
 
 export const pharmacyService = {
   /**
-   * Reset in-memory batch state to default seed data (useful for test isolation)
+   * Reset in-memory batch & approval state to default seed data (useful for test isolation)
    */
   resetInventoryToDefault(): void {
-    inMemoryBatches = [...MOCK_BATCHES];
+    inMemoryBatches = MOCK_BATCHES.map((b) => ({ ...b }));
+    inMemoryApprovals = MOCK_APPROVALS.map((a) => ({
+      ...a,
+      status: 'pending',
+      decidedAt: undefined,
+      decidedBy: undefined,
+      decisionNotes: undefined,
+    }));
     trackedBatchesCount = MOCK_METRICS.totalTrackedBatches;
+    const storage = getStorage();
+    if (storage) {
+      try {
+        storage.removeItem(APPROVAL_STORAGE_KEY);
+      } catch (_) {}
+    }
   },
 
   /**
@@ -62,9 +138,12 @@ export const pharmacyService = {
    */
   async getDashboardMetrics(): Promise<DashboardMetrics> {
     await delay();
+    const queue = await this.getApprovalQueue();
+    const pendingCount = queue.filter((a) => a.status === 'pending').length;
     return {
       ...MOCK_METRICS,
       totalTrackedBatches: trackedBatchesCount,
+      pendingApprovals: pendingCount,
     };
   },
 
@@ -243,7 +322,6 @@ export const pharmacyService = {
 
   /**
    * Fetch complete end-to-end provenance and cold-chain telemetry nodes for ANY batch
-   * (Ensures B2231 data is NEVER returned for unrelated batches!)
    */
   async getBatchTraceability(batchId: string): Promise<TraceabilityNode[]> {
     await delay();
@@ -259,7 +337,6 @@ export const pharmacyService = {
     const wh = b?.currentWarehouse || 'Central Depot';
     const exp = b?.expiryDate || '2028-09-01';
 
-    // Return batch-specific clean traceability nodes
     return [
       {
         id: `${targetId}-NODE-01`,
@@ -341,15 +418,38 @@ export const pharmacyService = {
   },
 
   /**
-   * Fetch pending approval queue requests
+   * Add a new approval request (e.g. when recommendation dispatched)
    */
-  async getApprovalQueue(): Promise<ApprovalRequest[]> {
+  async addApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest> {
     await delay();
-    return [...MOCK_APPROVALS];
+    inMemoryApprovals = [request, ...inMemoryApprovals];
+    return { ...request };
   },
 
   /**
-   * Update an approval request status (Approve / Reject)
+   * Fetch pending approval queue requests, restoring persisted decisions from localStorage by ID.
+   */
+  async getApprovalQueue(): Promise<ApprovalRequest[]> {
+    await delay();
+    const savedDecisions = getStoredApprovalDecisions();
+    return inMemoryApprovals.map((req) => {
+      const saved = savedDecisions[req.id];
+      if (saved && (saved.status === 'approved' || saved.status === 'rejected')) {
+        return {
+          ...req,
+          status: saved.status,
+          decidedBy: saved.decidedBy,
+          decidedAt: saved.decidedAt,
+          decisionNotes: saved.decisionNotes,
+        };
+      }
+      return { ...req };
+    });
+  },
+
+  /**
+   * Update an approval request status (Approve / Reject) and persist to versioned localStorage key.
+   * Prevents duplicate sign-offs on already decided items.
    */
   async updateApprovalDecision(
     approvalId: string,
@@ -358,14 +458,41 @@ export const pharmacyService = {
     decidedBy = 'Thaseen Taj (QA Lead Officer)'
   ): Promise<ApprovalRequest | null> {
     await delay();
-    const item = MOCK_APPROVALS.find((a) => a.id === approvalId);
-    if (item) {
-      item.status = decision;
-      item.decisionNotes = notes;
-      item.decidedAt = new Date().toISOString();
-      item.decidedBy = decidedBy;
+    const queue = await this.getApprovalQueue();
+    const item = queue.find((a) => a.id === approvalId);
+    if (!item) return null;
+
+    // Prevent duplicate sign-offs if already decided
+    if (item.status !== 'pending') {
       return { ...item };
     }
-    return null;
+
+    const decidedAt = new Date().toISOString();
+    const updatedItem: ApprovalRequest = {
+      ...item,
+      status: decision,
+      decisionNotes: notes,
+      decidedAt,
+      decidedBy,
+    };
+
+    // Update in-memory approval queue
+    const idx = inMemoryApprovals.findIndex((a) => a.id === approvalId);
+    if (idx !== -1) {
+      inMemoryApprovals[idx] = updatedItem;
+    } else {
+      inMemoryApprovals.unshift(updatedItem);
+    }
+
+    // Persist to versioned localStorage key
+    saveStoredApprovalDecision({
+      id: approvalId,
+      status: decision,
+      decidedBy,
+      decidedAt,
+      decisionNotes: notes,
+    });
+
+    return { ...updatedItem };
   },
 };
