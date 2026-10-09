@@ -106,16 +106,34 @@ export function App() {
       setApprovals((prev) =>
         prev.map((item) => (item.id === id ? { ...item, ...updated } : item))
       );
-      setMetrics((prev) => ({
-        ...prev,
-        pendingApprovals: Math.max(0, prev.pendingApprovals - 1),
-      }));
+
+      const [updatedBatches, updatedMetrics] = await Promise.all([
+        pharmacyService.getBatches(),
+        pharmacyService.getDashboardMetrics(),
+      ]);
+      setBatches(updatedBatches);
+      setMetrics(updatedMetrics);
+
       showToast(
         `Digital Sign-Off Recorded: Request ${id} was ${
           decision === 'approved' ? 'AUTHORIZED' : 'REJECTED'
         }.`
       );
     }
+  };
+
+  // Reset demo store and clear localStorage decisions
+  const handleResetDemo = async () => {
+    pharmacyService.resetInventoryToDefault();
+    const [fetchedMetrics, fetchedBatches, fetchedApprovals] = await Promise.all([
+      pharmacyService.getDashboardMetrics(),
+      pharmacyService.getBatches(),
+      pharmacyService.getApprovalQueue(),
+    ]);
+    setMetrics(fetchedMetrics);
+    setBatches(fetchedBatches);
+    setApprovals(fetchedApprovals);
+    showToast('Demo store & localStorage approval decisions reset to default seed state.');
   };
 
   const activeAlertsCount = alerts.filter((a) => a.status === 'active' || a.status === 'investigating').length;
@@ -206,6 +224,7 @@ export function App() {
             <ApprovalQueueScreen
               approvals={approvals}
               onDecision={handleDecision}
+              onResetDemo={handleResetDemo}
               onNavigate={setCurrentTab}
             />
           )}

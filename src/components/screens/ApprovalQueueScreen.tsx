@@ -19,12 +19,14 @@ interface ApprovalQueueScreenProps {
     notes: string
   ) => void;
   onNavigate: (tab: NavigationTab) => void;
+  onResetDemo?: () => void;
 }
 
 export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
   approvals,
   onDecision,
   onNavigate,
+  onResetDemo,
 }) => {
   const [activeItem, setActiveItem] = useState<{
     request: ApprovalRequest;
@@ -73,6 +75,16 @@ export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          {onResetDemo && (
+            <button
+              type="button"
+              onClick={onResetDemo}
+              className="px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded transition-colors"
+              title="Reset localStorage decisions and restore default seed queue"
+            >
+              Reset Demo Store
+            </button>
+          )}
           <span className="text-xs text-slate-600">Pending Actions:</span>
           <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">
             {pendingCount} Required

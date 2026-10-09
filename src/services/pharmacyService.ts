@@ -16,6 +16,7 @@
 
 import type {
   BatchItem,
+  BatchStatus,
   RiskAlert,
   TraceabilityNode,
   AIRecommendation,
@@ -41,6 +42,7 @@ import {
 } from './batchValidation';
 
 export const APPROVAL_STORAGE_KEY = 'arogya_pharma_approval_decisions_v1';
+export const BATCH_STORAGE_KEY = 'arogya_pharma_batch_updates_v1';
 
 export interface SavedApprovalDecision {
   id: string;
@@ -48,6 +50,13 @@ export interface SavedApprovalDecision {
   decidedBy: string;
   decidedAt: string;
   decisionNotes: string;
+}
+
+export interface SavedBatchUpdate {
+  batchId: string;
+  status: BatchStatus;
+  updatedAt: string;
+  reason?: string;
 }
 
 const memoryStorageMock: Record<string, string> = {};
@@ -96,6 +105,33 @@ export function saveStoredApprovalDecision(decision: SavedApprovalDecision): voi
   }
 }
 
+export function getStoredBatchUpdates(): Record<string, SavedBatchUpdate> {
+  try {
+    const storage = getStorage();
+    if (!storage) return {};
+    const raw = storage.getItem(BATCH_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return {};
+    return parsed as Record<string, SavedBatchUpdate>;
+  } catch (err) {
+    console.warn('Failed to parse batch updates from localStorage:', err);
+    return {};
+  }
+}
+
+export function saveStoredBatchUpdate(update: SavedBatchUpdate): void {
+  try {
+    const storage = getStorage();
+    if (!storage) return;
+    const current = getStoredBatchUpdates();
+    current[update.batchId] = update;
+    storage.setItem(BATCH_STORAGE_KEY, JSON.stringify(current));
+  } catch (err) {
+    console.warn('Failed to save batch update to localStorage:', err);
+  }
+}
+
 // Mutable in-memory stores simulating local database
 let inMemoryBatches: BatchItem[] = MOCK_BATCHES.map((b) => ({ ...b }));
 let inMemoryApprovals: ApprovalRequest[] = MOCK_APPROVALS.map((a) => ({
@@ -129,6 +165,7 @@ export const pharmacyService = {
     if (storage) {
       try {
         storage.removeItem(APPROVAL_STORAGE_KEY);
+        storage.removeItem(BATCH_STORAGE_KEY);
       } catch (_) {}
     }
   },
@@ -140,10 +177,13 @@ export const pharmacyService = {
     await delay();
     const queue = await this.getApprovalQueue();
     const pendingCount = queue.filter((a) => a.status === 'pending').length;
+    const batches = await this.getBatches();
+    const quarantinedCount = batches.filter((b) => b.status === 'quarantined').length;
     return {
       ...MOCK_METRICS,
       totalTrackedBatches: trackedBatchesCount,
       pendingApprovals: pendingCount,
+      quarantinedBatches: quarantinedCount,
     };
   },
 
@@ -152,7 +192,47 @@ export const pharmacyService = {
    */
   async getBatches(searchQuery?: string, statusFilter?: string): Promise<BatchItem[]> {
     await delay();
-    let result = [...inMemoryBatches];
+    const storedBatchUpdates = getStoredBatchUpdates();
+    const savedDecisions = getStoredApprovalDecisions();
+
+    let result = inMemoryBatches.map((b) => {
+      const batchKey = Object.keys(storedBatchUpdates).find(
+        (k) => k.toUpperCase() === b.id.toUpperCase()
+      );
+      if (batchKey && storedBatchUpdates[batchKey]) {
+        return { ...b, status: storedBatchUpdates[batchKey].status };
+      }
+
+      // Check all matching approval requests for this batch
+      const matchingApprovals = inMemoryApprovals.filter(
+        (a) => a.batchId.toUpperCase() === b.id.toUpperCase()
+      );
+
+      for (const req of matchingApprovals) {
+        const savedDec = savedDecisions[req.id];
+        const isApproved = savedDec
+          ? savedDec.status === 'approved'
+          : req.status === 'approved';
+
+        if (isApproved) {
+          if (req.requestType === 'Recall Authorization' || req.title.toLowerCase().includes('recall')) {
+            return { ...b, status: 'recalled' as const };
+          }
+          if (req.requestType === 'Quarantine Order' || req.title.toLowerCase().includes('quarantine')) {
+            return { ...b, status: 'quarantined' as const };
+          }
+          if (req.requestType === 'Disposal Order') {
+            return { ...b, status: 'quarantined' as const };
+          }
+          if (req.requestType === 'Release Override') {
+            return { ...b, status: 'released' as const };
+          }
+        }
+      }
+
+      return { ...b };
+    });
+
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       result = result.filter(
@@ -175,7 +255,8 @@ export const pharmacyService = {
    */
   async getBatchById(batchId: string): Promise<BatchItem | undefined> {
     await delay();
-    return inMemoryBatches.find((b) => b.id.toUpperCase() === batchId.toUpperCase());
+    const batches = await this.getBatches();
+    return batches.find((b) => b.id.toUpperCase() === batchId.toUpperCase());
   },
 
   /**
@@ -493,6 +574,72 @@ export const pharmacyService = {
       decisionNotes: notes,
     });
 
+    // Connect each action type to its correct effect when approved
+    if (decision === 'approved' && item.batchId) {
+      let targetStatus: BatchStatus | undefined;
+      if (item.requestType === 'Quarantine Order' || item.title.toLowerCase().includes('quarantine')) {
+        targetStatus = 'quarantined';
+      } else if (item.requestType === 'Recall Authorization' || item.title.toLowerCase().includes('recall')) {
+        targetStatus = 'recalled';
+      } else if (item.requestType === 'Release Override') {
+        targetStatus = 'released';
+      } else if (item.requestType === 'Disposal Order') {
+        targetStatus = 'quarantined';
+      }
+
+      if (targetStatus) {
+        const bIdx = inMemoryBatches.findIndex(
+          (b) => b.id.toUpperCase() === item.batchId.toUpperCase()
+        );
+        if (bIdx !== -1) {
+          inMemoryBatches[bIdx] = {
+            ...inMemoryBatches[bIdx],
+            status: targetStatus,
+          };
+          saveStoredBatchUpdate({
+            batchId: inMemoryBatches[bIdx].id,
+            status: targetStatus,
+            updatedAt: decidedAt,
+            reason: `Approved ${item.requestType} ${approvalId}`,
+          });
+        }
+      }
+    }
+
     return { ...updatedItem };
+  },
+
+  /**
+   * Check if a batch can be dispatched.
+   * Strictly enforces simulated dispatch block for batches whose status is Quarantined or Recalled.
+   */
+  async canDispatchBatch(batchId: string): Promise<{ allowed: boolean; reason?: string }> {
+    const batch = await this.getBatchById(batchId);
+    if (!batch) {
+      return { allowed: false, reason: `Batch ${batchId} not found in inventory.` };
+    }
+    if (batch.status === 'quarantined' || batch.status === 'recalled') {
+      return {
+        allowed: false,
+        reason: `Simulated Dispatch Blocked: Batch ${batch.id} (${batch.drugName}) is under status "${batch.status.toUpperCase()}". Commercial dispatch and distribution are strictly prohibited.`,
+      };
+    }
+    return { allowed: true };
+  },
+
+  /**
+   * Attempt to dispatch units from a batch.
+   * Rejects dispatch if batch status is Quarantined or Recalled.
+   */
+  async dispatchBatch(batchId: string, quantityUnits: number): Promise<{ success: boolean; message: string }> {
+    await delay();
+    const check = await this.canDispatchBatch(batchId);
+    if (!check.allowed) {
+      throw new Error(check.reason);
+    }
+    return {
+      success: true,
+      message: `Simulated dispatch of ${quantityUnits} units for Batch ${batchId} authorized.`,
+    };
   },
 };

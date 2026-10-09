@@ -134,4 +134,87 @@ describe('Approval Decisions — LocalStorage Persistence & Lifecycle', () => {
     expect(queue.length).toBeGreaterThan(0);
     expect(queue.some((a) => a.status === 'pending')).toBe(true);
   });
+
+  it('should synchronize batch status to "quarantined" when B2231 quarantine order APP-101 is approved and persist on refresh', async () => {
+    // 1. Initial state: B2231 is under_review
+    const initialB2231 = await pharmacyService.getBatchById('B2231');
+    expect(initialB2231?.status).toBe('under_review');
+
+    // 2. Approve quarantine order APP-101 for B2231
+    await pharmacyService.updateApprovalDecision(
+      'APP-101',
+      'approved',
+      'Authorized dock quarantine after cold chain excursion review.'
+    );
+
+    // 3. Batch B2231 status must immediately update to "quarantined"
+    const updatedB2231 = await pharmacyService.getBatchById('B2231');
+    expect(updatedB2231?.status).toBe('quarantined');
+
+    // 4. On refresh/re-fetching batches, status remains "quarantined"
+    const reloadedBatches = await pharmacyService.getBatches();
+    const reloadedB2231 = reloadedBatches.find((b) => b.id === 'B2231');
+    expect(reloadedB2231?.status).toBe('quarantined');
+  });
+
+  it('should NOT quarantine batch B2231 when quarantine order APP-101 is rejected', async () => {
+    // 1. Reject quarantine order APP-101
+    await pharmacyService.updateApprovalDecision(
+      'APP-101',
+      'rejected',
+      'Re-test showed no physical thermal degradation. Hold rejected.'
+    );
+
+    // 2. Batch B2231 status remains "under_review" (unquarantined)
+    const b2231 = await pharmacyService.getBatchById('B2231');
+    expect(b2231?.status).toBe('under_review');
+
+    // 3. Approval decision remains rejected
+    const queue = await pharmacyService.getApprovalQueue();
+    const app101 = queue.find((a) => a.id === 'APP-101');
+    expect(app101?.status).toBe('rejected');
+  });
+
+  it('should update batch B2231 status to "recalled" when Recall Authorization APP-102 is approved and persist on refresh', async () => {
+    // 1. Approve Recall Authorization APP-102 for B2231
+    await pharmacyService.updateApprovalDecision(
+      'APP-102',
+      'approved',
+      'Authorized consignee recall notifications.'
+    );
+
+    // 2. Batch B2231 status must update to "recalled"
+    const updatedB2231 = await pharmacyService.getBatchById('B2231');
+    expect(updatedB2231?.status).toBe('recalled');
+
+    // 3. On refresh/re-fetching, status remains "recalled"
+    const reloadedBatches = await pharmacyService.getBatches();
+    const reloadedB2231 = reloadedBatches.find((b) => b.id === 'B2231');
+    expect(reloadedB2231?.status).toBe('recalled');
+  });
+
+  it('should enforce simulated dispatch block for Quarantined and Recalled batches', async () => {
+    // 1. Quarantined batch B2231 cannot be dispatched
+    await pharmacyService.updateApprovalDecision('APP-101', 'approved', 'Quarantine B2231');
+    const checkQuarantined = await pharmacyService.canDispatchBatch('B2231');
+    expect(checkQuarantined.allowed).toBe(false);
+    expect(checkQuarantined.reason).toContain('Dispatch Blocked');
+
+    await expect(pharmacyService.dispatchBatch('B2231', 100)).rejects.toThrow('Simulated Dispatch Blocked');
+
+    // 2. Released batch B2240 can be dispatched
+    const checkReleased = await pharmacyService.canDispatchBatch('B2240');
+    expect(checkReleased.allowed).toBe(true);
+    const dispatchRes = await pharmacyService.dispatchBatch('B2240', 100);
+    expect(dispatchRes.success).toBe(true);
+  });
+
+  it('should ensure unrelated batch B2240 remains "released" when B2231 is quarantined', async () => {
+    // Approve quarantine order for B2231
+    await pharmacyService.updateApprovalDecision('APP-101', 'approved', 'Quarantine B2231');
+
+    // B2240 must remain QC Released ("released")
+    const b2240 = await pharmacyService.getBatchById('B2240');
+    expect(b2240?.status).toBe('released');
+  });
 });

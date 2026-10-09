@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, Filter, ShieldAlert, Plus, Edit3, Barcode, CheckCircle2 } from 'lucide-react';
+import { Search, Filter, ShieldAlert, Plus, Edit3, Barcode, CheckCircle2, Truck } from 'lucide-react';
 import { DataTable } from '../common/DataTable';
 import type { Column } from '../common/DataTable';
 import { BatchStatusBadge } from '../common/StatusBadge';
@@ -29,6 +29,19 @@ export const BatchInventoryScreen: React.FC<BatchInventoryScreenProps> = ({
   const [isRegisterModalOpen, setIsRegisterModalOpen] = useState(false);
   const [editingBatch, setEditingBatch] = useState<BatchItem | null>(null);
   const [recentRegisteredBatch, setRecentRegisteredBatch] = useState<BatchItem | null>(null);
+
+  // Test Dispatch Simulation State
+  const [isDispatchModalOpen, setIsDispatchModalOpen] = useState(false);
+  const [dispatchBatchId, setDispatchBatchId] = useState<string>('B2231');
+  const [dispatchQuantity, setDispatchQuantity] = useState<number>(100);
+  const [dispatchResult, setDispatchResult] = useState<{
+    success: boolean;
+    message: string;
+    batchId: string;
+    status?: string;
+  } | null>(null);
+  const [isDispatching, setIsDispatching] = useState(false);
+  const [dispatchError, setDispatchError] = useState<string | null>(null);
 
   const filteredBatches = batches.filter((b) => {
     const matchesSearch =
@@ -148,6 +161,21 @@ export const BatchInventoryScreen: React.FC<BatchInventoryScreenProps> = ({
             type="button"
             onClick={(e) => {
               e.stopPropagation();
+              setDispatchBatchId(batch.id);
+              setDispatchResult(null);
+              setDispatchError(null);
+              setIsDispatchModalOpen(true);
+            }}
+            title="Test Dispatch Authorization on this Lot"
+            className="text-xs font-semibold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-2 py-1 rounded transition-colors flex items-center gap-1"
+          >
+            <Truck className="w-3.5 h-3.5 text-teal-700" />
+            <span>Dispatch</span>
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
               setInspectedBatch(batch);
             }}
             className="text-xs font-semibold text-teal-700 hover:text-teal-900 bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded transition-colors"
@@ -169,6 +197,43 @@ export const BatchInventoryScreen: React.FC<BatchInventoryScreenProps> = ({
       ),
     },
   ];
+
+  const handleExecuteTestDispatch = async () => {
+    const cleanId = (dispatchBatchId || '').trim();
+    if (!cleanId) {
+      setDispatchError('Please select a valid batch ID.');
+      return;
+    }
+    if (!dispatchQuantity || dispatchQuantity <= 0) {
+      setDispatchError('Please enter a positive dispatch quantity.');
+      return;
+    }
+
+    setDispatchError(null);
+    setDispatchResult(null);
+    setIsDispatching(true);
+
+    try {
+      const res = await pharmacyService.dispatchBatch(cleanId, dispatchQuantity);
+      const targetBatch = batches.find((b) => b.id.toUpperCase() === cleanId.toUpperCase());
+      setDispatchResult({
+        success: true,
+        message: res.message,
+        batchId: cleanId.toUpperCase(),
+        status: targetBatch?.status || 'released',
+      });
+    } catch (err: any) {
+      const targetBatch = batches.find((b) => b.id.toUpperCase() === cleanId.toUpperCase());
+      setDispatchResult({
+        success: false,
+        message: err?.message || 'Dispatch blocked by system policy.',
+        batchId: cleanId.toUpperCase(),
+        status: targetBatch?.status,
+      });
+    } finally {
+      setIsDispatching(false);
+    }
+  };
 
   return (
     <div className="space-y-5">
@@ -242,15 +307,30 @@ export const BatchInventoryScreen: React.FC<BatchInventoryScreenProps> = ({
           ))}
         </div>
 
-        {/* Prominent Add New Batch Button (Requirement 1) */}
-        <button
-          type="button"
-          onClick={() => setIsRegisterModalOpen(true)}
-          className="w-full lg:w-auto px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white font-semibold rounded-md shadow-xs flex items-center justify-center gap-1.5 transition-colors shrink-0 text-xs"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Add New Batch</span>
-        </button>
+        {/* Action Buttons */}
+        <div className="flex items-center gap-2 w-full lg:w-auto shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              setDispatchResult(null);
+              setDispatchError(null);
+              setIsDispatchModalOpen(true);
+            }}
+            className="w-full lg:w-auto px-3.5 py-2 bg-slate-800 hover:bg-slate-900 text-white font-semibold rounded-md shadow-xs flex items-center justify-center gap-1.5 transition-colors shrink-0 text-xs"
+            title="Open Test Dispatch Authorization Console"
+          >
+            <Truck className="w-4 h-4 text-teal-400" />
+            <span>Test Dispatch</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsRegisterModalOpen(true)}
+            className="w-full lg:w-auto px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white font-semibold rounded-md shadow-xs flex items-center justify-center gap-1.5 transition-colors shrink-0 text-xs"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add New Batch</span>
+          </button>
+        </div>
       </div>
 
       {/* Inventory Table */}
@@ -293,6 +373,20 @@ export const BatchInventoryScreen: React.FC<BatchInventoryScreenProps> = ({
                 <span>Edit Batch Record</span>
               </button>
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDispatchBatchId(inspectedBatch.id);
+                    setDispatchResult(null);
+                    setDispatchError(null);
+                    setInspectedBatch(null);
+                    setIsDispatchModalOpen(true);
+                  }}
+                  className="px-3.5 py-1.5 text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded flex items-center gap-1.5"
+                >
+                  <Truck className="w-3.5 h-3.5 text-teal-700" />
+                  <span>Test Dispatch</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => setInspectedBatch(null)}
@@ -402,6 +496,136 @@ export const BatchInventoryScreen: React.FC<BatchInventoryScreenProps> = ({
                   <p className="text-[11px] text-rose-800 mt-0.5">
                     Batch B2231 has a simulated temperature anomaly alert (28.4°C for 210 mins). Precautionary dock hold recommended for qualified QA review. Sensor reading alone does not establish product degradation. Tracing scope: 180 warehouse units, 640 dispatched across 25 customers. Potential replacement Batch B2240 (400 units) identified.
                   </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {/* Test Dispatch Modal */}
+      {isDispatchModalOpen && (
+        <Modal
+          isOpen={isDispatchModalOpen}
+          onClose={() => {
+            setIsDispatchModalOpen(false);
+            setDispatchResult(null);
+            setDispatchError(null);
+          }}
+          title="Test Dispatch Authorization (Simulation Console)"
+          subtitle="Verify dispatch status checks against real-time batch inventory & QA regulatory hold status"
+          maxWidth="lg"
+          footer={
+            <div className="flex items-center justify-between w-full">
+              <span className="text-[11px] text-slate-500 italic">
+                * Simulated verification console — no actual inventory deducted
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsDispatchModalOpen(false);
+                    setDispatchResult(null);
+                    setDispatchError(null);
+                  }}
+                  className="px-3.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded hover:bg-slate-50"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExecuteTestDispatch}
+                  disabled={isDispatching}
+                  className="px-4 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded shadow-xs flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <Truck className="w-3.5 h-3.5 text-teal-400" />
+                  <span>{isDispatching ? 'Validating...' : 'Execute Test Dispatch'}</span>
+                </button>
+              </div>
+            </div>
+          }
+        >
+          <div className="space-y-4 text-xs">
+            {/* Simulation Notice Banner */}
+            <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg text-purple-900 flex items-start gap-2.5">
+              <DemoBadge label="SIMULATION MODE" size="sm" />
+              <div className="text-[11px]">
+                <span className="font-bold">Operator Guidance:</span> This console directly calls{' '}
+                <code className="bg-purple-100 px-1 py-0.5 rounded font-mono">pharmacyService.canDispatchBatch()</code> and{' '}
+                <code className="bg-purple-100 px-1 py-0.5 rounded font-mono">pharmacyService.dispatchBatch()</code>. Select any lot to verify dispatch hold enforcement.
+              </div>
+            </div>
+
+            {/* Inputs */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block font-bold text-slate-800 mb-1">Select Batch to Dispatch:</label>
+                <select
+                  value={dispatchBatchId}
+                  onChange={(e) => {
+                    setDispatchBatchId(e.target.value);
+                    setDispatchResult(null);
+                    setDispatchError(null);
+                  }}
+                  className="w-full p-2 text-xs rounded border border-slate-300 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-teal-600"
+                >
+                  {batches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.id} — {b.drugName} ({b.status.toUpperCase()})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-800 mb-1">Dispatch Quantity (Units):</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={dispatchQuantity}
+                  onChange={(e) => setDispatchQuantity(parseInt(e.target.value, 10) || 0)}
+                  className="w-full p-2 text-xs rounded border border-slate-300 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-teal-600 font-mono font-semibold"
+                />
+              </div>
+            </div>
+
+            {/* Error Message */}
+            {dispatchError && (
+              <p className="text-rose-600 font-bold bg-rose-50 p-2 rounded border border-rose-200">
+                {dispatchError}
+              </p>
+            )}
+
+            {/* Result Display */}
+            {dispatchResult && (
+              <div
+                className={`p-4 rounded-lg border space-y-2 animate-fadeIn ${
+                  dispatchResult.success
+                    ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                    : 'bg-rose-50 border-rose-300 text-rose-950'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {dispatchResult.success ? (
+                      <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                    ) : (
+                      <ShieldAlert className="w-5 h-5 text-rose-600 shrink-0" />
+                    )}
+                    <span className="font-bold text-sm">
+                      {dispatchResult.success ? 'DISPATCH AUTHORIZED' : 'DISPATCH BLOCKED BY REGULATORY HOLD'}
+                    </span>
+                  </div>
+                  <span className="font-mono text-xs font-bold bg-white/80 px-2 py-0.5 rounded border border-current">
+                    Lot {dispatchResult.batchId}
+                  </span>
+                </div>
+
+                <p className="text-xs leading-relaxed font-medium">{dispatchResult.message}</p>
+
+                <div className="pt-2 border-t border-current/10 flex items-center justify-between text-[11px] text-slate-600">
+                  <span>Enforced by: <strong className="font-mono text-slate-800">pharmacyService.canDispatchBatch</strong></span>
+                  <span>Evaluated Batch Status: <strong className="uppercase font-bold text-slate-900">{dispatchResult.status || 'N/A'}</strong></span>
                 </div>
               </div>
             )}
