@@ -18,6 +18,7 @@ import type {
   BatchItem,
   BatchStatus,
   RiskAlert,
+  RiskType,
   TraceabilityNode,
   AIRecommendation,
   ApprovalRequest,
@@ -40,6 +41,7 @@ import {
   validateBatchRegistration,
   sanitizeRegisterBatchInput,
 } from './batchValidation';
+import { riskEngine, type RiskCheckResult } from './riskEngine';
 
 export const APPROVAL_STORAGE_KEY = 'arogya_pharma_approval_decisions_v1';
 export const BATCH_STORAGE_KEY = 'arogya_pharma_batch_updates_v1';
@@ -394,7 +396,57 @@ export const pharmacyService = {
    */
   async getRiskAlerts(severity?: string): Promise<RiskAlert[]> {
     await delay();
-    let result = [...MOCK_ALERTS];
+    const batches = await this.getBatches();
+
+    // Dynamically run risk engine checks against active batches
+    const expResults = riskEngine.checkExpiringBeforeSale(batches);
+    const supResults = riskEngine.checkSupplierReturnWindow(batches);
+    const fefoResults = riskEngine.checkFEFOViolations(batches);
+
+    const generatedAlerts: RiskAlert[] = [];
+
+    const mapResultToAlert = (r: RiskCheckResult, riskType: RiskType, prefix: string): RiskAlert => {
+      const b = batches.find((item) => item.id.toUpperCase() === r.batchId.toUpperCase());
+      return {
+        id: `${prefix}-${r.batchId}`,
+        batchId: r.batchId,
+        drugName: r.drugName,
+        riskType,
+        severity: r.severity,
+        warehouse: b?.currentWarehouse || 'Logistics Warehouse',
+        detectedAt: '2026-10-10 08:00 IST',
+        status: 'active',
+        description: r.evidence.join(' '),
+        telemetrySummary: r.evidence[0] || r.ruleName,
+        affectedUnits: r.affectedUnits,
+        recommendedAction: r.suggestedNextStep,
+      };
+    };
+
+    for (const r of expResults) {
+      generatedAlerts.push(mapResultToAlert(r, 'Expiry Before Sale Risk', 'ALT-EXP'));
+    }
+    for (const r of supResults) {
+      generatedAlerts.push(mapResultToAlert(r, 'Supplier Return Window Closing', 'ALT-SUP'));
+    }
+    for (const r of fefoResults) {
+      generatedAlerts.push(mapResultToAlert(r, 'FEFO Protocol Violation', 'ALT-FEFO'));
+    }
+
+    // Merge static seed MOCK_ALERTS and dynamic generated alerts without duplicates
+    const combined: RiskAlert[] = [...MOCK_ALERTS];
+
+    for (const gen of generatedAlerts) {
+      const exists = combined.some(
+        (a) => a.id.toUpperCase() === gen.id.toUpperCase() ||
+               (a.batchId.toUpperCase() === gen.batchId.toUpperCase() && a.riskType === gen.riskType)
+      );
+      if (!exists) {
+        combined.push(gen);
+      }
+    }
+
+    let result = combined;
     if (severity && severity !== 'all') {
       result = result.filter((a) => a.severity === severity);
     }

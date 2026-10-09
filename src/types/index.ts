@@ -16,7 +16,10 @@ export type RiskType =
   | 'Packaging Integrity Breach'
   | 'Transit Vibration Anomaly'
   | 'Documentation Discrepancy'
-  | 'Microbial Contamination Risk';
+  | 'Microbial Contamination Risk'
+  | 'Expiry Before Sale Risk'
+  | 'Supplier Return Window Closing'
+  | 'FEFO Protocol Violation';
 
 export interface BatchItem {
   id: string; // Internal batch ID e.g. "B2231"
@@ -40,6 +43,10 @@ export interface BatchItem {
   barcodeValue?: string;
   registeredAt?: string;
   notes?: string;
+  // Optional sales rate and supplier return fields for risk engine:
+  estimatedMonthlySalesRate?: number; // Estimated units sold per month
+  supplierReturnDeadline?: string; // e.g. "2026-10-25"
+  supplierReturnPolicyDays?: number; // e.g. 45 days prior to expiry
 }
 
 export interface ProductMasterItem {
@@ -116,6 +123,7 @@ export interface RiskAlert {
   description: string;
   telemetrySummary?: string;
   affectedUnits: number;
+  recommendedAction?: string;
 }
 
 export interface TraceabilityNode {

@@ -21,12 +21,19 @@ export const RiskAlertsScreen: React.FC<RiskAlertsScreenProps> = ({
   const [selectedAlert, setSelectedAlert] = useState<RiskAlert | null>(null);
 
   const filteredAlerts = alerts.filter((alert) => {
+    const q = searchQuery.toLowerCase().trim();
+    if (!q) {
+      return severityFilter === 'all' || alert.severity === severityFilter;
+    }
     const matchesSearch =
-      alert.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      alert.batchId.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      alert.drugName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      alert.riskType.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      alert.warehouse.toLowerCase().includes(searchQuery.toLowerCase());
+      alert.id.toLowerCase().includes(q) ||
+      alert.batchId.toLowerCase().includes(q) ||
+      alert.drugName.toLowerCase().includes(q) ||
+      alert.riskType.toLowerCase().includes(q) ||
+      alert.warehouse.toLowerCase().includes(q) ||
+      alert.description.toLowerCase().includes(q) ||
+      (alert.telemetrySummary && alert.telemetrySummary.toLowerCase().includes(q)) ||
+      (alert.recommendedAction && alert.recommendedAction.toLowerCase().includes(q));
 
     const matchesSeverity =
       severityFilter === 'all' || alert.severity === severityFilter;
@@ -240,6 +247,17 @@ export const RiskAlertsScreen: React.FC<RiskAlertsScreenProps> = ({
                 </span>
                 <p className="font-mono text-emerald-400 text-[11px] leading-relaxed">
                   {selectedAlert.telemetrySummary}
+                </p>
+              </div>
+            )}
+
+            {selectedAlert.recommendedAction && (
+              <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg space-y-1">
+                <span className="font-semibold text-purple-900 block">
+                  Recommended Action & Mitigation Plan
+                </span>
+                <p className="text-purple-800 leading-relaxed text-xs">
+                  {selectedAlert.recommendedAction}
                 </p>
               </div>
             )}

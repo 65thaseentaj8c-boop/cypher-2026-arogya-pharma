@@ -40,64 +40,118 @@ export interface InventoryShortageCheck {
 export const riskEngine = {
   /**
    * (a) Check for batches likely to expire before selling based on expiry date & stock volume
+   * Handles missing sales rate data gracefully as "Insufficient data".
    */
   checkExpiringBeforeSale(batches: BatchItem[], daysThreshold = 90): RiskCheckResult[] {
     const results: RiskCheckResult[] = [];
     const now = new Date('2026-10-10');
 
     for (const b of batches) {
+      if (b.status === 'quarantined' || b.status === 'recalled') continue;
+
       const expDate = new Date(b.expiryDate);
       const diffDays = Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 3600 * 24));
 
-      if (diffDays > 0 && diffDays <= daysThreshold && b.batchSizeUnits > 5000 && b.status === 'released') {
-        results.push({
-          ruleId: 'RULE-EXP-BEFORE-SALE',
-          ruleName: 'Batch Expiring Before Estimated Sales Velocity',
-          triggered: true,
-          severity: diffDays <= 30 ? 'high' : 'medium',
-          batchId: b.id,
-          drugName: b.drugName,
-          evidence: [
-            `Expiry date ${b.expiryDate} is in ${diffDays} days (Threshold: ${daysThreshold} days).`,
-            `High unsold inventory volume: ${b.batchSizeUnits.toLocaleString()} units remaining at ${b.currentWarehouse}.`,
-            `Historical monthly depletion rate: ~1,200 units/month; estimated unsold surplus at expiry: ~${Math.max(0, b.batchSizeUnits - Math.round((diffDays/30)*1200))} units.`,
-          ],
-          affectedUnits: b.batchSizeUnits,
-          suggestedNextStep: `Evaluate inter-warehouse transfer to high-demand regional depots or request FEFO dispatch override in QA Approval Queue.`,
-        });
+      // Trigger for active stock expiring within threshold
+      if (diffDays > 0 && diffDays <= daysThreshold && b.batchSizeUnits > 0) {
+        let evidence: string[] = [];
+        let severity: SeverityLevel = diffDays <= 30 ? 'high' : 'medium';
+        let isRisk = false;
+
+        if (b.estimatedMonthlySalesRate !== undefined && b.estimatedMonthlySalesRate > 0) {
+          const estimatedSalesBeforeExpiry = Math.round((diffDays / 30) * b.estimatedMonthlySalesRate);
+          const unsoldSurplus = b.batchSizeUnits - estimatedSalesBeforeExpiry;
+
+          if (unsoldSurplus > 0) {
+            isRisk = true;
+            evidence = [
+              `Expiry date: ${b.expiryDate} (${diffDays} days remaining; Threshold: ${daysThreshold} days).`,
+              `Available stock: ${b.batchSizeUnits.toLocaleString()} units remaining at ${b.currentWarehouse}.`,
+              `Sales velocity: ${b.estimatedMonthlySalesRate.toLocaleString()} units/month.`,
+              `Projected unsold surplus at expiry: ${unsoldSurplus.toLocaleString()} units.`,
+            ];
+          }
+        } else {
+          // If required sales rate data is missing, report "Insufficient data" rather than inventing a value
+          isRisk = true;
+          severity = 'medium';
+          evidence = [
+            `Expiry date: ${b.expiryDate} (${diffDays} days remaining; Threshold: ${daysThreshold} days).`,
+            `Available stock: ${b.batchSizeUnits.toLocaleString()} units remaining at ${b.currentWarehouse}.`,
+            `Sales/Demand Rate: Insufficient data`,
+            `Unsold Surplus Projection: Insufficient data (sales velocity unrecorded).`,
+          ];
+        }
+
+        if (isRisk) {
+          results.push({
+            ruleId: 'RULE-EXP-BEFORE-SALE',
+            ruleName: 'Batch Expiring Before Estimated Sales Velocity',
+            triggered: true,
+            severity,
+            batchId: b.id,
+            drugName: b.drugName,
+            evidence,
+            affectedUnits: b.batchSizeUnits,
+            suggestedNextStep: `Evaluate promotional stock clearance, inter-warehouse transfer to high-demand regional depots, or request FEFO dispatch priority in QA Approval Queue.`,
+          });
+        }
       }
     }
     return results;
   },
 
   /**
-   * (b) Check for closing supplier return windows (e.g. return allowed within 60 days before expiry)
+   * (b) Check for closing supplier return windows (e.g. return allowed within deadline / policy window)
    */
   checkSupplierReturnWindow(batches: BatchItem[]): RiskCheckResult[] {
     const results: RiskCheckResult[] = [];
     const now = new Date('2026-10-10');
 
     for (const b of batches) {
-      const expDate = new Date(b.expiryDate);
-      const diffDays = Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 3600 * 24));
+      if (b.status === 'quarantined' || b.status === 'recalled') continue;
 
-      // Supplier return policy requires return notice at least 45 days before expiry
-      if (diffDays > 0 && diffDays <= 60 && diffDays > 30) {
-        results.push({
-          ruleId: 'RULE-SUPPLIER-RETURN-WINDOW',
-          ruleName: 'Supplier Return Credit Window Closing',
-          triggered: true,
-          severity: 'medium',
-          batchId: b.id,
-          drugName: b.drugName,
-          evidence: [
-            `Manufacturer return contract with ${b.manufacturerName || 'Supplier'} closes 45 days prior to expiry.`,
-            `Current window remaining: ${diffDays - 45} days before return credit eligibility expires.`,
-            `Current unsold stock: ${b.batchSizeUnits.toLocaleString()} units at ${b.currentWarehouse}.`,
-          ],
-          affectedUnits: b.batchSizeUnits,
-          suggestedNextStep: `Submit Return Credit Note request to QA Approval Queue for manufacturer return authorization.`,
-        });
+      let deadlineDate: Date | null = null;
+      let deadlineStr = '';
+
+      if (b.supplierReturnDeadline) {
+        deadlineDate = new Date(b.supplierReturnDeadline);
+        deadlineStr = b.supplierReturnDeadline;
+      } else if (b.supplierReturnPolicyDays !== undefined && b.supplierReturnPolicyDays > 0) {
+        const expDate = new Date(b.expiryDate);
+        deadlineDate = new Date(expDate.getTime() - b.supplierReturnPolicyDays * 24 * 3600 * 1000);
+        deadlineStr = deadlineDate.toISOString().slice(0, 10);
+      }
+
+      if (deadlineDate) {
+        const diffDeadlineDays = Math.ceil((deadlineDate.getTime() - now.getTime()) / (1000 * 3600 * 24));
+        const supplier = b.manufacturerName || 'Supplier';
+
+        // Trigger if return deadline is closing (<= 60 days) or has passed
+        if (diffDeadlineDays <= 60) {
+          const eligibilityStatus = diffDeadlineDays > 0
+            ? `Eligible — Return Window Closing (${diffDeadlineDays} days remaining)`
+            : `Deadline Passed (${Math.abs(diffDeadlineDays)} days ago) — Subject to Supplier Waiver`;
+
+          const severity: SeverityLevel = diffDeadlineDays <= 0 ? 'high' : diffDeadlineDays <= 15 ? 'high' : 'medium';
+
+          results.push({
+            ruleId: 'RULE-SUPPLIER-RETURN-WINDOW',
+            ruleName: 'Supplier Return Credit Window Closing / Expired',
+            triggered: true,
+            severity,
+            batchId: b.id,
+            drugName: b.drugName,
+            evidence: [
+              `Supplier / Manufacturer: ${supplier}.`,
+              `Supplier return deadline: ${deadlineStr} (${diffDeadlineDays > 0 ? `${diffDeadlineDays} days remaining` : `passed ${Math.abs(diffDeadlineDays)} days ago`}).`,
+              `Eligibility status: ${eligibilityStatus}.`,
+              `Available stock: ${b.batchSizeUnits.toLocaleString()} units remaining at ${b.currentWarehouse}.`,
+            ],
+            affectedUnits: b.batchSizeUnits,
+            suggestedNextStep: `Submit Return Credit Note request to QA Approval Queue for manufacturer return authorization before credit window expires.`,
+          });
+        }
       }
     }
     return results;
@@ -208,42 +262,55 @@ export const riskEngine = {
 
   /**
    * (f) Check for FEFO (First Expiring, First Out) violations
+   * Detects when a later-expiring batch is dispatched while an earlier-expiring eligible batch of the same product remains available.
+   * Strictly respects batch status (ignores quarantined, recalled, under_review, or expired earlier batches).
    */
   checkFEFOViolations(batches: BatchItem[]): RiskCheckResult[] {
     const results: RiskCheckResult[] = [];
-    const releasedBatches = batches.filter(b => b.status === 'released' || b.status === 'in_transit');
+    const now = new Date('2026-10-10');
 
-    // Sort by expiry date ascending
-    const sortedByExpiry = [...releasedBatches].sort(
-      (a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime()
+    // Filter to batches currently dispatched or in transit
+    const dispatchedBatches = batches.filter(
+      b => b.status === 'in_transit' &&
+           new Date(b.expiryDate).getTime() > now.getTime()
     );
 
-    // Check if a batch with later expiry was dispatched or released while an earlier expiring batch of same product remains
-    for (let i = 0; i < sortedByExpiry.length; i++) {
-      for (let j = i + 1; j < sortedByExpiry.length; j++) {
-        const earlierExpBatch = sortedByExpiry[i];
-        const laterExpBatch = sortedByExpiry[j];
+    // Eligible available stock batches: status === 'released', stock > 0, expiry > now, not quarantined/recalled/under_review
+    const eligibleAvailableBatches = batches.filter(
+      b => b.status === 'released' &&
+           b.batchSizeUnits > 0 &&
+           new Date(b.expiryDate).getTime() > now.getTime()
+    );
 
-        if (
-          earlierExpBatch.productSku === laterExpBatch.productSku &&
-          earlierExpBatch.status === 'released' &&
-          laterExpBatch.status === 'in_transit'
-        ) {
-          results.push({
-            ruleId: 'RULE-FEFO-VIOLATION',
-            ruleName: 'FEFO Protocol Violation (Later Expiry Dispatched First)',
-            triggered: true,
-            severity: 'medium',
-            batchId: laterExpBatch.id,
-            drugName: laterExpBatch.drugName,
-            evidence: [
-              `Batch ${laterExpBatch.id} (Exp: ${laterExpBatch.expiryDate}) was dispatched before older Batch ${earlierExpBatch.id} (Exp: ${earlierExpBatch.expiryDate}).`,
-              `Older Batch ${earlierExpBatch.id} has ${earlierExpBatch.batchSizeUnits.toLocaleString()} units remaining at ${earlierExpBatch.currentWarehouse}.`,
-            ],
-            affectedUnits: laterExpBatch.batchSizeUnits,
-            suggestedNextStep: `Halt secondary dispatches of ${laterExpBatch.id} and prioritize allocation of ${earlierExpBatch.id} to fulfill pending orders.`,
-          });
-        }
+    for (const dispatched of dispatchedBatches) {
+      const matchingSku = (dispatched.productSku || dispatched.drugName).toLowerCase();
+      const dispatchedExp = new Date(dispatched.expiryDate).getTime();
+
+      // Find an earlier-expiring eligible batch of the same product sitting available in warehouse
+      const earlierEligible = eligibleAvailableBatches.find(avail => {
+        if (avail.id.toUpperCase() === dispatched.id.toUpperCase()) return false;
+        const availSku = (avail.productSku || avail.drugName).toLowerCase();
+        if (availSku !== matchingSku) return false;
+        const availExp = new Date(avail.expiryDate).getTime();
+        return availExp < dispatchedExp;
+      });
+
+      if (earlierEligible) {
+        results.push({
+          ruleId: 'RULE-FEFO-VIOLATION',
+          ruleName: 'FEFO Protocol Violation (Later Expiry Dispatched First)',
+          triggered: true,
+          severity: 'medium',
+          batchId: dispatched.id,
+          drugName: dispatched.drugName,
+          evidence: [
+            `Dispatched Batch ${dispatched.id} (Exp: ${dispatched.expiryDate}) was dispatched before older eligible Batch ${earlierEligible.id} (Exp: ${earlierEligible.expiryDate}).`,
+            `Older Batch ${earlierEligible.id} has ${earlierEligible.batchSizeUnits.toLocaleString()} units remaining at ${earlierEligible.currentWarehouse}.`,
+            `FEFO protocol requires dispatching Batch ${earlierEligible.id} prior to Batch ${dispatched.id}.`,
+          ],
+          affectedUnits: dispatched.batchSizeUnits,
+          suggestedNextStep: `Halt secondary dispatches of Batch ${dispatched.id} and prioritize allocation of earlier-expiring Batch ${earlierEligible.id} to fulfill pending orders.`,
+        });
       }
     }
 
