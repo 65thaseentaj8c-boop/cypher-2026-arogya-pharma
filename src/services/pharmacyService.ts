@@ -378,9 +378,7 @@ export const pharmacyService = {
         if (statusFilter && statusFilter !== 'all') {
           result = result.filter((b) => b.status === statusFilter);
         }
-        if (result.length > 0) {
-          return result;
-        }
+        return result;
       } else if (error && error.code !== '42501' && !error.message.includes('permission denied')) {
         throw new Error(`Supabase Database Error: ${error.message}`);
       }

@@ -1,12 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   pharmacyService,
   mapBatchItemToDatabaseBatchForInsert,
   mapDatabaseBatchToBatchItem,
 } from '../pharmacyService';
 import type { RegisterBatchInput, BatchItem } from '../../types';
+import * as supabaseModule from '../../lib/supabase';
 
-describe('Batch Registration Failure Diagnosis & Fix Tests', () => {
+describe('Batch Registration & Live Inventory Fallback Tests', () => {
   const validPayload: RegisterBatchInput = {
     batchId: 'DEMO-B2401',
     productName: 'Paracetamol Infusion IP',
@@ -125,5 +126,135 @@ describe('Batch Registration Failure Diagnosis & Fix Tests', () => {
     expect(item.status).toBe('under_review');
     expect(item.riskScore).toBe(0);
     expect(item.registeredAt).toBe('2026-10-10 08:00:00+00');
+  });
+
+  // Tests for Requirement: Live inventory fallback bug fix
+  describe('getBatches — Live Query & Fallback Behavior', () => {
+    it('returns mapped live rows when Supabase returns data with records', async () => {
+      const mockSelect = vi.fn().mockResolvedValue({
+        data: [
+          {
+            id: 'LIVE-001',
+            drug_name: 'Live Drug A',
+            product_sku: 'SKU-LIVE-A',
+            manufacturer_name: 'Live Mfg',
+            manufacturer_lot_number: 'LOT-001',
+            dosage_form: 'Tablet',
+            strength: '500mg',
+            batch_size_units: 5000,
+            received_quantity: 5000,
+            manufacturing_date: '2026-01-01',
+            expiry_date: '2028-01-01',
+            storage_condition: 'Ambient',
+            current_warehouse: 'WH-01',
+            status: 'released',
+            risk_score: 5,
+            active_ingredients: 'Active A',
+            barcode_value: null,
+            qr_code_url: null,
+            registered_at: null,
+            notes: null,
+            estimated_monthly_sales_rate: null,
+            supplier_return_deadline: null,
+            supplier_return_policy_days: null,
+          },
+        ],
+        error: null,
+      });
+
+      const mockFrom = vi.fn().mockReturnValue({ select: mockSelect });
+      vi.spyOn(supabaseModule, 'isSupabaseConfigured', 'get').mockReturnValue(true);
+      vi.spyOn(supabaseModule, 'supabase', 'get').mockReturnValue({ from: mockFrom } as any);
+
+      const result = await pharmacyService.getBatches();
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe('LIVE-001');
+
+      vi.restoreAllMocks();
+    });
+
+    it('returns an empty array when Supabase query succeeds with zero rows (does NOT fall back to demo data)', async () => {
+      const mockSelect = vi.fn().mockResolvedValue({
+        data: [],
+        error: null,
+      });
+
+      const mockFrom = vi.fn().mockReturnValue({ select: mockSelect });
+      vi.spyOn(supabaseModule, 'isSupabaseConfigured', 'get').mockReturnValue(true);
+      vi.spyOn(supabaseModule, 'supabase', 'get').mockReturnValue({ from: mockFrom } as any);
+
+      const result = await pharmacyService.getBatches();
+      expect(result).toEqual([]);
+      expect(result).toHaveLength(0);
+
+      vi.restoreAllMocks();
+    });
+
+    it('returns an empty array when search or status filters match zero rows on successful query (does NOT fall back to demo data)', async () => {
+      const mockSelect = vi.fn().mockResolvedValue({
+        data: [
+          {
+            id: 'LIVE-001',
+            drug_name: 'Live Drug A',
+            product_sku: 'SKU-LIVE-A',
+            manufacturer_name: 'Live Mfg',
+            manufacturer_lot_number: 'LOT-001',
+            dosage_form: 'Tablet',
+            strength: '500mg',
+            batch_size_units: 5000,
+            received_quantity: 5000,
+            manufacturing_date: '2026-01-01',
+            expiry_date: '2028-01-01',
+            storage_condition: 'Ambient',
+            current_warehouse: 'WH-01',
+            status: 'released',
+            risk_score: 5,
+            active_ingredients: 'Active A',
+            barcode_value: null,
+            qr_code_url: null,
+            registered_at: null,
+            notes: null,
+            estimated_monthly_sales_rate: null,
+            supplier_return_deadline: null,
+            supplier_return_policy_days: null,
+          },
+        ],
+        error: null,
+      });
+
+      const mockFrom = vi.fn().mockReturnValue({ select: mockSelect });
+      vi.spyOn(supabaseModule, 'isSupabaseConfigured', 'get').mockReturnValue(true);
+      vi.spyOn(supabaseModule, 'supabase', 'get').mockReturnValue({ from: mockFrom } as any);
+
+      // Search for non-existent drug
+      const searchResult = await pharmacyService.getBatches('NONEXISTENT_QUERY');
+      expect(searchResult).toEqual([]);
+
+      // Filter by non-matching status
+      const statusResult = await pharmacyService.getBatches(undefined, 'quarantined');
+      expect(statusResult).toEqual([]);
+
+      vi.restoreAllMocks();
+    });
+
+    it('falls back to inMemoryBatches when Supabase returns an unauthenticated/permission error (e.g. 42501)', async () => {
+      pharmacyService.resetInventoryToDefault();
+
+      const mockSelect = vi.fn().mockResolvedValue({
+        data: null,
+        error: { code: '42501', message: 'permission denied for table batches' },
+      });
+
+      const mockFrom = vi.fn().mockReturnValue({ select: mockSelect });
+      vi.spyOn(supabaseModule, 'isSupabaseConfigured', 'get').mockReturnValue(true);
+      vi.spyOn(supabaseModule, 'supabase', 'get').mockReturnValue({ from: mockFrom } as any);
+
+      const result = await pharmacyService.getBatches();
+      // Should fall back to inMemoryBatches demo data
+      expect(result.length).toBeGreaterThan(0);
+      expect(result.some((b) => b.id === 'B2231')).toBe(true);
+
+      vi.restoreAllMocks();
+    });
   });
 });
