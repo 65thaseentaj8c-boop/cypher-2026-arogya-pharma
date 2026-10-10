@@ -132,4 +132,33 @@ describe('Pharmacy Service — Batch Registration & Inventory Management', () =>
     const retrieved = await pharmacyService.getBatchById('B2245');
     expect(retrieved?.currentWarehouse).toBe('Hyderabad Pharma City WH-HYD-02');
   });
+
+  // Dispatch quantity validation tests
+  it('rejects invalid, zero, negative, non-integer, and excessive dispatch quantities', async () => {
+    // 1. Zero quantity
+    await expect(pharmacyService.dispatchBatch('B2240', 0)).rejects.toThrow(
+      'Invalid dispatch quantity. Quantity must be a positive number.'
+    );
+
+    // 2. Negative quantity
+    await expect(pharmacyService.dispatchBatch('B2240', -50)).rejects.toThrow(
+      'Invalid dispatch quantity. Quantity must be a positive number.'
+    );
+
+    // 3. Non-integer decimal quantity
+    await expect(pharmacyService.dispatchBatch('B2240', 12.5)).rejects.toThrow(
+      'Invalid dispatch quantity. Quantity must be a whole integer.'
+    );
+
+    // 4. Excessive quantity exceeding available stock (B2240 stock is 400)
+    await expect(pharmacyService.dispatchBatch('B2240', 500)).rejects.toThrow(
+      'exceeds available batch stock'
+    );
+
+    // 5. Non-existent batch ID
+    await expect(pharmacyService.dispatchBatch('B9999', 10)).rejects.toThrow(
+      'Batch B9999 not found in inventory.'
+    );
+  });
 });
+

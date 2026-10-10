@@ -745,9 +745,22 @@ export const pharmacyService = {
    */
   async dispatchBatch(batchId: string, quantityUnits: number): Promise<{ success: boolean; message: string }> {
     await delay();
+    if (typeof quantityUnits !== 'number' || isNaN(quantityUnits) || !isFinite(quantityUnits) || quantityUnits <= 0) {
+      throw new Error('Invalid dispatch quantity. Quantity must be a positive number.');
+    }
+    if (!Number.isInteger(quantityUnits)) {
+      throw new Error('Invalid dispatch quantity. Quantity must be a whole integer.');
+    }
+    const batch = await this.getBatchById(batchId);
+    if (!batch) {
+      throw new Error(`Batch ${batchId} not found in inventory.`);
+    }
     const check = await this.canDispatchBatch(batchId);
     if (!check.allowed) {
       throw new Error(check.reason);
+    }
+    if (quantityUnits > batch.batchSizeUnits) {
+      throw new Error(`Dispatch quantity (${quantityUnits} units) exceeds available batch stock (${batch.batchSizeUnits} units).`);
     }
     return {
       success: true,
@@ -755,3 +768,4 @@ export const pharmacyService = {
     };
   },
 };
+
