@@ -259,13 +259,13 @@ describe('Batch Registration & Live Inventory Fallback Tests', () => {
     });
   });
 
-  // Tests for Approval Requests Permission & Payload Verification
-  describe('approval_requests — Permissions & Insert Payload Compliance', () => {
+  // Tests for Approval Requests Permission, Pre-Flight Batch Verification, & FK Handling
+  describe('approval_requests — Permissions, Foreign Key & Pre-Flight Batch Verification', () => {
     it('mapApprovalRequestToDatabaseApprovalForInsert excludes status, submitted_at, and decision fields to adhere to column GRANT INSERT permissions', () => {
       const sampleReq: ApprovalRequest = {
         id: 'APP-9999',
-        batchId: 'B2231',
-        title: 'Quarantine Order — Batch B2231 Thermal Excursion',
+        batchId: 'DEMO-B2401',
+        title: 'Quarantine Order — Batch DEMO-B2401',
         requestType: 'Quarantine Order',
         submittedBy: 'qa.lead@arogyapharma.com',
         submittedAt: '2026-10-10 08:00 IST',
@@ -282,8 +282,8 @@ describe('Batch Registration & Live Inventory Fallback Tests', () => {
 
       // Verify allowed columns for authenticated INSERT
       expect(dbInsertPayload.id).toBe('APP-9999');
-      expect(dbInsertPayload.batch_id).toBe('B2231');
-      expect(dbInsertPayload.title).toBe('Quarantine Order — Batch B2231 Thermal Excursion');
+      expect(dbInsertPayload.batch_id).toBe('DEMO-B2401');
+      expect(dbInsertPayload.title).toBe('Quarantine Order — Batch DEMO-B2401');
       expect(dbInsertPayload.request_type).toBe('Quarantine Order');
       expect(dbInsertPayload.submitted_by).toBe('qa.lead@arogyapharma.com');
       expect(dbInsertPayload.urgency).toBe('critical');
@@ -298,11 +298,19 @@ describe('Batch Registration & Live Inventory Fallback Tests', () => {
       expect('decided_by' in dbInsertPayload).toBe(false);
     });
 
-    it('addApprovalRequest uses compliant insert payload when connected to Supabase', async () => {
-      const mockSingle = vi.fn().mockResolvedValue({
+    it('addApprovalRequest pre-flight check verifies batch_id existence before insert and succeeds for registered batch', async () => {
+      // Mock batch lookup: batch exists
+      const mockBatchSelect = vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'DEMO-B2401' }, error: null }),
+        }),
+      });
+
+      // Mock insert on approval_requests
+      const mockInsertSingle = vi.fn().mockResolvedValue({
         data: {
           id: 'APP-8888',
-          batch_id: 'B2231',
+          batch_id: 'DEMO-B2401',
           title: 'Recall Order',
           request_type: 'Recall Authorization',
           submitted_by: 'qa.lead@arogyapharma.com',
@@ -318,16 +326,26 @@ describe('Batch Registration & Live Inventory Fallback Tests', () => {
         error: null,
       });
 
-      const mockSelect = vi.fn().mockReturnValue({ single: mockSingle });
-      const mockInsert = vi.fn().mockReturnValue({ select: mockSelect });
-      const mockFrom = vi.fn().mockReturnValue({ insert: mockInsert });
+      const mockApprovalInsert = vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({ single: mockInsertSingle }),
+      });
+
+      const mockFrom = vi.fn().mockImplementation((table: string) => {
+        if (table === 'batches') {
+          return { select: mockBatchSelect };
+        }
+        if (table === 'approval_requests') {
+          return { insert: mockApprovalInsert };
+        }
+        return {};
+      });
 
       vi.spyOn(supabaseModule, 'isSupabaseConfigured', 'get').mockReturnValue(true);
       vi.spyOn(supabaseModule, 'supabase', 'get').mockReturnValue({ from: mockFrom } as any);
 
       const requestInput: ApprovalRequest = {
         id: 'APP-8888',
-        batchId: 'B2231',
+        batchId: 'DEMO-B2401',
         title: 'Recall Order',
         requestType: 'Recall Authorization',
         submittedBy: 'qa.lead@arogyapharma.com',
@@ -338,21 +356,84 @@ describe('Batch Registration & Live Inventory Fallback Tests', () => {
       };
 
       const result = await pharmacyService.addApprovalRequest(requestInput);
-
-      expect(mockFrom).toHaveBeenCalledWith('approval_requests');
-      expect(mockInsert).toHaveBeenCalledWith([
-        {
-          id: 'APP-8888',
-          batch_id: 'B2231',
-          title: 'Recall Order',
-          request_type: 'Recall Authorization',
-          submitted_by: 'qa.lead@arogyapharma.com',
-          urgency: 'critical',
-          summary: 'Critical defect',
-          regulatory_reference: null,
-        },
-      ]);
       expect(result.id).toBe('APP-8888');
+
+      vi.restoreAllMocks();
+    });
+
+    it('addApprovalRequest rejects submission when batch_id is NOT registered in live database', async () => {
+      // Mock batch lookup: batch does NOT exist (maybeSingle returns null)
+      const mockBatchSelect = vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        }),
+      });
+
+      const mockFrom = vi.fn().mockImplementation((table: string) => {
+        if (table === 'batches') {
+          return { select: mockBatchSelect };
+        }
+        return {};
+      });
+
+      vi.spyOn(supabaseModule, 'isSupabaseConfigured', 'get').mockReturnValue(true);
+      vi.spyOn(supabaseModule, 'supabase', 'get').mockReturnValue({ from: mockFrom } as any);
+
+      const demoRequest: ApprovalRequest = {
+        id: 'APP-9001',
+        batchId: 'B2240', // Demo-only batch ID not in live database
+        title: 'Quarantine Order — Batch B2240 Reserve',
+        requestType: 'Quarantine Order',
+        submittedBy: 'qa.lead@arogyapharma.com',
+        submittedAt: '2026-10-10 08:00 IST',
+        urgency: 'critical',
+        summary: 'Demo recommendation advisory',
+        status: 'pending',
+      };
+
+      await expect(pharmacyService.addApprovalRequest(demoRequest)).rejects.toThrow(
+        /Batch "B2240" is not registered in the live database/
+      );
+
+      vi.restoreAllMocks();
+    });
+
+    it('addApprovalRequest rejects submission when batch pre-flight check encounters database lookup error', async () => {
+      // Mock batch lookup: returns database query error
+      const mockBatchSelect = vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          maybeSingle: vi.fn().mockResolvedValue({
+            data: null,
+            error: { code: 'PGRST500', message: 'Internal Server Error' },
+          }),
+        }),
+      });
+
+      const mockFrom = vi.fn().mockImplementation((table: string) => {
+        if (table === 'batches') {
+          return { select: mockBatchSelect };
+        }
+        return {};
+      });
+
+      vi.spyOn(supabaseModule, 'isSupabaseConfigured', 'get').mockReturnValue(true);
+      vi.spyOn(supabaseModule, 'supabase', 'get').mockReturnValue({ from: mockFrom } as any);
+
+      const request: ApprovalRequest = {
+        id: 'APP-9002',
+        batchId: 'DEMO-B2401',
+        title: 'Quarantine Order',
+        requestType: 'Quarantine Order',
+        submittedBy: 'qa.lead@arogyapharma.com',
+        submittedAt: '2026-10-10 08:00 IST',
+        urgency: 'critical',
+        summary: 'Testing error lookup',
+        status: 'pending',
+      };
+
+      await expect(pharmacyService.addApprovalRequest(request)).rejects.toThrow(
+        /Supabase Database Error \[PGRST500\]/
+      );
 
       vi.restoreAllMocks();
     });
@@ -378,7 +459,7 @@ describe('Batch Registration & Live Inventory Fallback Tests', () => {
       const mockRpc = vi.fn().mockResolvedValue({
         data: {
           id: 'APP-101',
-          batch_id: 'B2231',
+          batch_id: 'DEMO-B2401',
           title: 'Quarantine Order',
           request_type: 'Quarantine Order',
           submitted_by: 'QA Analyst',

@@ -834,7 +834,27 @@ export const pharmacyService = {
    * Enforces stable duplicate prevention based on batch ID & request type for active pending requests.
    */
   async addApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest> {
+    const cleanBatchId = (request.batchId || '').trim().toUpperCase();
+    const cleanType = (request.requestType || '').trim().toUpperCase();
+
     if (isSupabaseConfigured && supabase) {
+      // Pre-flight check: verify batch exists in live public.batches table
+      const { data: batchMatch, error: batchError } = await supabase
+        .from('batches')
+        .select('id')
+        .eq('id', cleanBatchId)
+        .maybeSingle();
+
+      if (batchError) {
+        throw new Error(`Supabase Database Error [${batchError.code}]: ${batchError.message}`);
+      }
+
+      if (!batchMatch) {
+        throw new Error(
+          `Batch "${cleanBatchId}" is not registered in the live database. Cannot submit approval request for an unregistered batch.`
+        );
+      }
+
       const dbReq = mapApprovalRequestToDatabaseApprovalForInsert(request);
       const { data, error } = await supabase
         .from('approval_requests')
@@ -843,22 +863,31 @@ export const pharmacyService = {
         .single();
 
       if (error) {
+        if (error.code === '23503' || error.message.includes('foreign key') || error.message.includes('fkey')) {
+          throw new Error(
+            `Batch "${cleanBatchId}" is not registered in the live database. Cannot submit approval request for an unregistered batch.`
+          );
+        }
         if (error.code === '23505' || error.message.includes('unique constraint') || error.message.includes('duplicate')) {
           throw new Error(
             `An equivalent pending ${request.requestType} already exists for Batch ${request.batchId} (Request ID: ${request.id}). Duplicate submission prevented.`
           );
         }
-        throw new Error(`Supabase Database Error: ${error.message}`);
+        throw new Error(`Supabase Database Error [${error.code}]: ${error.message}`);
       }
       return mapDatabaseApprovalToApprovalRequest(data as DatabaseApprovalRequest);
     }
 
     await delay();
+    // Pre-flight check: verify batch exists in inMemoryBatches fallback store
+    const batchExists = inMemoryBatches.some((b) => b.id.toUpperCase() === cleanBatchId);
+    if (!batchExists) {
+      throw new Error(
+        `Batch "${cleanBatchId}" is not registered in inventory. Cannot submit approval request for an unregistered batch.`
+      );
+    }
+
     const queue = await this.getApprovalQueue();
-
-    const cleanBatchId = (request.batchId || '').trim().toUpperCase();
-    const cleanType = (request.requestType || '').trim().toUpperCase();
-
     const existingPending = queue.find(
       (a) =>
         a.status === 'pending' &&

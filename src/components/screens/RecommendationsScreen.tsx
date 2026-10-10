@@ -36,15 +36,16 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
     if (isSubmitting) return;
     setIsSubmitting(true);
     try {
-      setSubmittedIds((prev) => [...prev, rec.id]);
       await onSubmitToQA(rec);
+      setSubmittedIds((prev) => [...prev, rec.id]);
+    } catch (_) {
+      // Submission failed, state remains unsubmitted
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handlePoSubmit = () => {
-    setPoSubmitted(true);
+  const handlePoSubmit = async () => {
     // Create an approval request for the PO
     const fakePoRec: AIRecommendation = {
       id: `PO-${Date.now().toString().slice(-4)}`,
@@ -63,7 +64,12 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
       recommendedAt: new Date().toLocaleTimeString() + ' IST',
       status: 'pending_review',
     };
-    onSubmitToQA(fakePoRec);
+    try {
+      await onSubmitToQA(fakePoRec);
+      setPoSubmitted(true);
+    } catch (_) {
+      // Submission failed
+    }
   };
 
   return (
