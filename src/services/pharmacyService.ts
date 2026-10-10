@@ -1,22 +1,18 @@
 /**
  * Arogya Pharma — Dedicated Data-Access Service Layer
  * 
- * ARCHITECTURE NOTE FOR TEAMMATES & FUTURE SUPABASE INTEGRATION:
+ * ARCHITECTURE NOTE FOR SUPABASE INTEGRATION:
  * -------------------------------------------------------------
- * This service currently returns Promise-wrapped local mock data.
- * When the backend team or risk engine is ready to connect Supabase:
- * 
- * 1. Install `@supabase/supabase-js`.
- * 2. Instantiate `const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)` in a client module.
- * 3. Replace the mock data resolutions inside each method below with:
- *      const { data, error } = await supabase.from('table_name').select('*');
- * 4. The UI components will not need ANY refactoring because they depend
- *    strictly on this async service interface and the TypeScript types!
+ * When VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY are configured in .env.local,
+ * this service executes live PostgREST queries and RPC operations against Supabase.
+ * When unconfigured or when an unauthenticated client reads baseline inventory,
+ * it seamlessly falls back to in-memory seed data and localStorage.
  */
 
 import type {
   BatchItem,
   BatchStatus,
+  SeverityLevel,
   RiskAlert,
   RiskType,
   TraceabilityNode,
@@ -42,6 +38,177 @@ import {
   sanitizeRegisterBatchInput,
 } from './batchValidation';
 import { riskEngine, type RiskCheckResult } from './riskEngine';
+import { isSupabaseConfigured, supabase } from '../lib/supabase';
+
+// Database Interfaces matching PostgREST response schemas
+export interface DatabaseBatch {
+  id: string;
+  drug_name: string;
+  product_sku: string | null;
+  manufacturer_name: string | null;
+  manufacturer_lot_number: string | null;
+  dosage_form: string;
+  strength: string;
+  batch_size_units: number;
+  received_quantity: number | null;
+  manufacturing_date: string;
+  expiry_date: string;
+  storage_condition: string;
+  current_warehouse: string;
+  status: BatchStatus;
+  risk_score: number;
+  active_ingredients: string;
+  barcode_value: string | null;
+  qr_code_url: string | null;
+  registered_at: string | null;
+  notes: string | null;
+  estimated_monthly_sales_rate: number | null;
+  supplier_return_deadline: string | null;
+  supplier_return_policy_days: number | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface DatabaseApprovalRequest {
+  id: string;
+  batch_id: string;
+  title: string;
+  request_type: 'Quarantine Order' | 'Recall Authorization' | 'Release Override' | 'Disposal Order';
+  submitted_by: string;
+  submitted_at: string;
+  urgency: SeverityLevel;
+  summary: string;
+  regulatory_reference: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  decision_notes: string | null;
+  decided_at: string | null;
+  decided_by: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export function mapDatabaseBatchToBatchItem(db: DatabaseBatch): BatchItem {
+  return {
+    id: db.id,
+    drugName: db.drug_name,
+    productSku: db.product_sku || undefined,
+    manufacturerName: db.manufacturer_name || undefined,
+    manufacturerLotNumber: db.manufacturer_lot_number || undefined,
+    dosageForm: db.dosage_form,
+    strength: db.strength,
+    batchSizeUnits: Number(db.batch_size_units),
+    receivedQuantity: db.received_quantity !== null && db.received_quantity !== undefined ? Number(db.received_quantity) : undefined,
+    manufacturingDate: db.manufacturing_date,
+    expiryDate: db.expiry_date,
+    storageCondition: db.storage_condition,
+    currentWarehouse: db.current_warehouse,
+    status: db.status,
+    riskScore: Number(db.risk_score),
+    activeIngredients: db.active_ingredients,
+    barcodeValue: db.barcode_value || undefined,
+    qrCodeUrl: db.qr_code_url || undefined,
+    registeredAt: db.registered_at || undefined,
+    notes: db.notes || undefined,
+    estimatedMonthlySalesRate: db.estimated_monthly_sales_rate !== null && db.estimated_monthly_sales_rate !== undefined ? Number(db.estimated_monthly_sales_rate) : undefined,
+    supplierReturnDeadline: db.supplier_return_deadline || undefined,
+    supplierReturnPolicyDays: db.supplier_return_policy_days !== null && db.supplier_return_policy_days !== undefined ? Number(db.supplier_return_policy_days) : undefined,
+  };
+}
+
+export function mapBatchItemToDatabaseBatch(item: Partial<BatchItem>): Partial<DatabaseBatch> {
+  const db: Partial<DatabaseBatch> = {};
+  if (item.id !== undefined) db.id = item.id;
+  if (item.drugName !== undefined) db.drug_name = item.drugName;
+  if (item.productSku !== undefined) db.product_sku = item.productSku || null;
+  if (item.manufacturerName !== undefined) db.manufacturer_name = item.manufacturerName || null;
+  if (item.manufacturerLotNumber !== undefined) db.manufacturer_lot_number = item.manufacturerLotNumber || null;
+  if (item.dosageForm !== undefined) db.dosage_form = item.dosageForm;
+  if (item.strength !== undefined) db.strength = item.strength;
+  if (item.batchSizeUnits !== undefined) db.batch_size_units = item.batchSizeUnits;
+  if (item.receivedQuantity !== undefined) db.received_quantity = item.receivedQuantity !== undefined ? item.receivedQuantity : null;
+  if (item.manufacturingDate !== undefined) db.manufacturing_date = item.manufacturingDate;
+  if (item.expiryDate !== undefined) db.expiry_date = item.expiryDate;
+  if (item.storageCondition !== undefined) db.storage_condition = item.storageCondition;
+  if (item.currentWarehouse !== undefined) db.current_warehouse = item.currentWarehouse;
+  if (item.status !== undefined) db.status = item.status;
+  if (item.riskScore !== undefined) db.risk_score = item.riskScore;
+  if (item.activeIngredients !== undefined) db.active_ingredients = item.activeIngredients;
+  if (item.barcodeValue !== undefined) db.barcode_value = item.barcodeValue || null;
+  if (item.qrCodeUrl !== undefined) db.qr_code_url = item.qrCodeUrl || null;
+  if (item.registeredAt !== undefined) db.registered_at = item.registeredAt || null;
+  if (item.notes !== undefined) db.notes = item.notes || null;
+  if (item.estimatedMonthlySalesRate !== undefined) db.estimated_monthly_sales_rate = item.estimatedMonthlySalesRate !== undefined ? item.estimatedMonthlySalesRate : null;
+  if (item.supplierReturnDeadline !== undefined) db.supplier_return_deadline = item.supplierReturnDeadline || null;
+  if (item.supplierReturnPolicyDays !== undefined) db.supplier_return_policy_days = item.supplierReturnPolicyDays !== undefined ? item.supplierReturnPolicyDays : null;
+  return db;
+}
+
+/**
+ * Maps a BatchItem input to a DatabaseBatch payload strictly matching
+ * the column-level GRANT INSERT permissions on public.batches for authenticated users.
+ * Omits status (DB default: 'under_review'), risk_score (DB default: 0),
+ * registered_at (DB default: now()), created_at, and updated_at.
+ */
+export function mapBatchItemToDatabaseBatchForInsert(item: Partial<BatchItem>): Partial<DatabaseBatch> {
+  const db: Partial<DatabaseBatch> = {};
+  if (item.id !== undefined) db.id = item.id;
+  if (item.drugName !== undefined) db.drug_name = item.drugName;
+  if (item.productSku !== undefined) db.product_sku = item.productSku || null;
+  if (item.manufacturerName !== undefined) db.manufacturer_name = item.manufacturerName || null;
+  if (item.manufacturerLotNumber !== undefined) db.manufacturer_lot_number = item.manufacturerLotNumber || null;
+  if (item.dosageForm !== undefined) db.dosage_form = item.dosageForm;
+  if (item.strength !== undefined) db.strength = item.strength;
+  if (item.batchSizeUnits !== undefined) db.batch_size_units = item.batchSizeUnits;
+  if (item.receivedQuantity !== undefined) db.received_quantity = item.receivedQuantity !== undefined ? item.receivedQuantity : null;
+  if (item.manufacturingDate !== undefined) db.manufacturing_date = item.manufacturingDate;
+  if (item.expiryDate !== undefined) db.expiry_date = item.expiryDate;
+  if (item.storageCondition !== undefined) db.storage_condition = item.storageCondition;
+  if (item.currentWarehouse !== undefined) db.current_warehouse = item.currentWarehouse;
+  if (item.activeIngredients !== undefined) db.active_ingredients = item.activeIngredients;
+  if (item.barcodeValue !== undefined) db.barcode_value = item.barcodeValue || null;
+  if (item.qrCodeUrl !== undefined) db.qr_code_url = item.qrCodeUrl || null;
+  if (item.notes !== undefined) db.notes = item.notes || null;
+  if (item.estimatedMonthlySalesRate !== undefined) db.estimated_monthly_sales_rate = item.estimatedMonthlySalesRate !== undefined ? item.estimatedMonthlySalesRate : null;
+  if (item.supplierReturnDeadline !== undefined) db.supplier_return_deadline = item.supplierReturnDeadline || null;
+  if (item.supplierReturnPolicyDays !== undefined) db.supplier_return_policy_days = item.supplierReturnPolicyDays !== undefined ? item.supplierReturnPolicyDays : null;
+  return db;
+}
+
+export function mapDatabaseApprovalToApprovalRequest(db: DatabaseApprovalRequest): ApprovalRequest {
+  return {
+    id: db.id,
+    batchId: db.batch_id,
+    title: db.title,
+    requestType: db.request_type,
+    submittedBy: db.submitted_by,
+    submittedAt: db.submitted_at,
+    urgency: db.urgency,
+    summary: db.summary,
+    regulatoryReference: db.regulatory_reference || undefined,
+    status: db.status,
+    decisionNotes: db.decision_notes || undefined,
+    decidedAt: db.decided_at || undefined,
+    decidedBy: db.decided_by || undefined,
+  };
+}
+
+export function mapApprovalRequestToDatabaseApproval(req: ApprovalRequest): DatabaseApprovalRequest {
+  return {
+    id: req.id,
+    batch_id: req.batchId,
+    title: req.title,
+    request_type: req.requestType,
+    submitted_by: req.submittedBy,
+    submitted_at: req.submittedAt,
+    urgency: req.urgency,
+    summary: req.summary,
+    regulatory_reference: req.regulatoryReference || null,
+    status: req.status,
+    decision_notes: req.decisionNotes || null,
+    decided_at: req.decidedAt || null,
+    decided_by: req.decidedBy || null,
+  };
+}
 
 export const APPROVAL_STORAGE_KEY = 'arogya_pharma_approval_decisions_v1';
 export const BATCH_STORAGE_KEY = 'arogya_pharma_batch_updates_v1';
@@ -183,7 +350,7 @@ export const pharmacyService = {
     const quarantinedCount = batches.filter((b) => b.status === 'quarantined').length;
     return {
       ...MOCK_METRICS,
-      totalTrackedBatches: trackedBatchesCount,
+      totalTrackedBatches: batches.length,
       pendingApprovals: pendingCount,
       quarantinedBatches: quarantinedCount,
     };
@@ -193,6 +360,32 @@ export const pharmacyService = {
    * Fetch all tracked pharmaceutical batches with optional status or search filter
    */
   async getBatches(searchQuery?: string, statusFilter?: string): Promise<BatchItem[]> {
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase.from('batches').select('*');
+      if (!error && data) {
+        let result = (data as DatabaseBatch[]).map(mapDatabaseBatchToBatchItem);
+        if (searchQuery) {
+          const q = searchQuery.toLowerCase();
+          result = result.filter(
+            (b) =>
+              b.id.toLowerCase().includes(q) ||
+              b.drugName.toLowerCase().includes(q) ||
+              b.currentWarehouse.toLowerCase().includes(q) ||
+              (b.productSku && b.productSku.toLowerCase().includes(q)) ||
+              (b.manufacturerLotNumber && b.manufacturerLotNumber.toLowerCase().includes(q))
+          );
+        }
+        if (statusFilter && statusFilter !== 'all') {
+          result = result.filter((b) => b.status === statusFilter);
+        }
+        if (result.length > 0) {
+          return result;
+        }
+      } else if (error && error.code !== '42501' && !error.message.includes('permission denied')) {
+        throw new Error(`Supabase Database Error: ${error.message}`);
+      }
+    }
+
     await delay();
     const storedBatchUpdates = getStoredBatchUpdates();
     const savedDecisions = getStoredApprovalDecisions();
@@ -205,7 +398,6 @@ export const pharmacyService = {
         return { ...b, status: storedBatchUpdates[batchKey].status };
       }
 
-      // Check all matching approval requests for this batch
       const matchingApprovals = inMemoryApprovals.filter(
         (a) => a.batchId.toUpperCase() === b.id.toUpperCase()
       );
@@ -256,7 +448,6 @@ export const pharmacyService = {
    * Get specific batch details by ID (e.g. Batch B2231)
    */
   async getBatchById(batchId: string): Promise<BatchItem | undefined> {
-    await delay();
     const batches = await this.getBatches();
     return batches.find((b) => b.id.toUpperCase() === batchId.toUpperCase());
   },
@@ -270,12 +461,49 @@ export const pharmacyService = {
     productSku?: string,
     manufacturer?: string
   ): Promise<DuplicateCheckResult> {
-    await delay();
     const cleanBatchId = (batchId || '').trim().toUpperCase();
     const cleanLot = (lotNumber || '').trim().toUpperCase();
     const cleanSku = (productSku || '').trim().toUpperCase();
     const cleanMfg = (manufacturer || '').trim().toLowerCase();
 
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase
+        .from('batches')
+        .select('id, manufacturer_lot_number, product_sku, manufacturer_name');
+      if (!error && data) {
+        const existing = data as DatabaseBatch[];
+        const isDuplicateBatchId = existing.some(
+          (b) => b.id.toUpperCase() === cleanBatchId
+        );
+
+        let isDuplicateLot = false;
+        if (cleanLot && (cleanSku || cleanMfg)) {
+          isDuplicateLot = existing.some((b) => {
+            const matchLot = (b.manufacturer_lot_number || '').toUpperCase() === cleanLot;
+            const matchSku = cleanSku && (b.product_sku || '').toUpperCase() === cleanSku;
+            const matchMfg = cleanMfg && (b.manufacturer_name || '').toLowerCase() === cleanMfg;
+            return matchLot && matchSku && matchMfg;
+          });
+        }
+
+        let message: string | undefined;
+        if (isDuplicateBatchId) {
+          message = `Internal Batch ID "${cleanBatchId}" already exists in inventory.`;
+        } else if (isDuplicateLot) {
+          message = `Manufacturer lot "${cleanLot}" is already registered for this product and manufacturer.`;
+        }
+
+        return {
+          isDuplicateBatchId,
+          isDuplicateLot,
+          message,
+        };
+      } else if (error && error.code !== '42501' && !error.message.includes('permission denied')) {
+        throw new Error(`Supabase Database Error: ${error.message}`);
+      }
+    }
+
+    await delay();
     const isDuplicateBatchId = inMemoryBatches.some(
       (b) => b.id.toUpperCase() === cleanBatchId
     );
@@ -308,19 +536,15 @@ export const pharmacyService = {
    * Register a new pharmaceutical batch into the system.
    */
   async registerBatch(input: RegisterBatchInput): Promise<BatchItem> {
-    await delay();
-
-    // 1. Validate
-    const { isValid, errors } = validateBatchRegistration(input, inMemoryBatches);
+    const existingBatches = await this.getBatches();
+    const { isValid, errors } = validateBatchRegistration(input, existingBatches);
     if (!isValid) {
       const firstError = Object.values(errors)[0] || 'Invalid batch registration data.';
       throw new Error(firstError);
     }
 
-    // 2. Sanitize
     const sanitized = sanitizeRegisterBatchInput(input);
 
-    // 3. Double-check duplicates on sanitized values
     const dupCheck = await this.checkBatchDuplicates(
       sanitized.batchId,
       sanitized.manufacturerLotNumber,
@@ -331,7 +555,6 @@ export const pharmacyService = {
       throw new Error(dupCheck.message || 'Duplicate batch registration constraint violation.');
     }
 
-    // 4. Create new BatchItem with initial status 'under_review'
     const newBatch: BatchItem = {
       id: sanitized.batchId,
       drugName: sanitized.productName,
@@ -354,10 +577,26 @@ export const pharmacyService = {
       notes: sanitized.notes,
     };
 
-    // 5. Store in memory and update metrics
+    if (isSupabaseConfigured && supabase) {
+      const dbRow = mapBatchItemToDatabaseBatchForInsert(newBatch);
+      const { data, error } = await supabase
+        .from('batches')
+        .insert([dbRow])
+        .select()
+        .single();
+
+      if (error) {
+        if (error.code === '23505') {
+          throw new Error(`Duplicate batch registration constraint violation: ${error.message}`);
+        }
+        throw new Error(`Supabase Database Error [${error.code}]: ${error.message}`);
+      }
+      return mapDatabaseBatchToBatchItem(data as DatabaseBatch);
+    }
+
+    await delay();
     inMemoryBatches = [newBatch, ...inMemoryBatches];
     trackedBatchesCount += 1;
-
     return { ...newBatch };
   },
 
@@ -365,9 +604,32 @@ export const pharmacyService = {
    * Update existing batch record
    */
   async updateBatch(input: UpdateBatchInput): Promise<BatchItem> {
+    const cleanId = input.batchId.trim().toUpperCase();
+
+    if (isSupabaseConfigured && supabase) {
+      const updateData: Partial<DatabaseBatch> = {};
+      if (input.currentWarehouse?.trim()) updateData.current_warehouse = input.currentWarehouse.trim();
+      if (input.storageCondition?.trim()) updateData.storage_condition = input.storageCondition.trim();
+      if (input.batchSizeUnits !== undefined && input.batchSizeUnits > 0) updateData.batch_size_units = input.batchSizeUnits;
+      if (input.manufacturerLotNumber?.trim()) updateData.manufacturer_lot_number = input.manufacturerLotNumber.trim();
+      if (input.notes !== undefined) updateData.notes = input.notes.trim() || null;
+
+      const { data, error } = await supabase
+        .from('batches')
+        .update(updateData)
+        .eq('id', cleanId)
+        .select()
+        .single();
+
+      if (error) {
+        throw new Error(`Supabase Database Error: ${error.message}`);
+      }
+      return mapDatabaseBatchToBatchItem(data as DatabaseBatch);
+    }
+
     await delay();
     const index = inMemoryBatches.findIndex(
-      (b) => b.id.toUpperCase() === input.batchId.trim().toUpperCase()
+      (b) => b.id.toUpperCase() === cleanId
     );
     if (index === -1) {
       throw new Error(`Batch ID "${input.batchId}" not found in inventory.`);
@@ -398,7 +660,6 @@ export const pharmacyService = {
     await delay();
     const batches = await this.getBatches();
 
-    // Dynamically run risk engine checks against active batches
     const expResults = riskEngine.checkExpiringBeforeSale(batches);
     const supResults = riskEngine.checkSupplierReturnWindow(batches);
     const fefoResults = riskEngine.checkFEFOViolations(batches);
@@ -433,7 +694,6 @@ export const pharmacyService = {
       generatedAlerts.push(mapResultToAlert(r, 'FEFO Protocol Violation', 'ALT-FEFO'));
     }
 
-    // Merge static seed MOCK_ALERTS and dynamic generated alerts without duplicates
     const combined: RiskAlert[] = [...MOCK_ALERTS];
 
     for (const gen of generatedAlerts) {
@@ -464,7 +724,7 @@ export const pharmacyService = {
       return [...MOCK_TRACEABILITY_B2231];
     }
 
-    const b = inMemoryBatches.find((item) => item.id.toUpperCase() === targetId);
+    const b = await this.getBatchById(targetId);
     const drugName = b ? b.drugName : `Batch ${targetId}`;
     const mfg = b?.manufacturerName || 'Arogya Formulation Works';
     const wh = b?.currentWarehouse || 'Central Depot';
@@ -555,13 +815,31 @@ export const pharmacyService = {
    * Enforces stable duplicate prevention based on batch ID & request type for active pending requests.
    */
   async addApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest> {
+    if (isSupabaseConfigured && supabase) {
+      const dbReq = mapApprovalRequestToDatabaseApproval(request);
+      const { data, error } = await supabase
+        .from('approval_requests')
+        .insert([dbReq])
+        .select()
+        .single();
+
+      if (error) {
+        if (error.code === '23505' || error.message.includes('unique constraint') || error.message.includes('duplicate')) {
+          throw new Error(
+            `An equivalent pending ${request.requestType} already exists for Batch ${request.batchId} (Request ID: ${request.id}). Duplicate submission prevented.`
+          );
+        }
+        throw new Error(`Supabase Database Error: ${error.message}`);
+      }
+      return mapDatabaseApprovalToApprovalRequest(data as DatabaseApprovalRequest);
+    }
+
     await delay();
     const queue = await this.getApprovalQueue();
 
     const cleanBatchId = (request.batchId || '').trim().toUpperCase();
     const cleanType = (request.requestType || '').trim().toUpperCase();
 
-    // Check if an equivalent pending request already exists in the approval queue
     const existingPending = queue.find(
       (a) =>
         a.status === 'pending' &&
@@ -583,6 +861,18 @@ export const pharmacyService = {
    * Remove a single approval request by ID
    */
   async removeApprovalRequest(id: string): Promise<boolean> {
+    if (isSupabaseConfigured && supabase) {
+      const { error } = await supabase
+        .from('approval_requests')
+        .delete()
+        .eq('id', id);
+
+      if (error) {
+        throw new Error(`Supabase Database Error: ${error.message}`);
+      }
+      return true;
+    }
+
     await delay();
     const idx = inMemoryApprovals.findIndex((a) => a.id === id);
     if (idx !== -1) {
@@ -596,6 +886,34 @@ export const pharmacyService = {
    * Safely clean up duplicate pending requests while preserving primary pending requests and all historical decisions.
    */
   async cleanupDuplicatePendingRequests(): Promise<string[]> {
+    if (isSupabaseConfigured && supabase) {
+      const queue = await this.getApprovalQueue();
+      const seenPendingKeys = new Set<string>();
+      const removedIds: string[] = [];
+
+      for (const req of queue) {
+        if (req.status === 'pending') {
+          const key = `${req.batchId.trim().toUpperCase()}_${req.requestType.trim().toUpperCase()}`;
+          if (seenPendingKeys.has(key)) {
+            removedIds.push(req.id);
+          } else {
+            seenPendingKeys.add(key);
+          }
+        }
+      }
+
+      if (removedIds.length > 0) {
+        const { error } = await supabase
+          .from('approval_requests')
+          .delete()
+          .in('id', removedIds);
+        if (error) {
+          throw new Error(`Supabase Database Error: ${error.message}`);
+        }
+      }
+      return removedIds;
+    }
+
     await delay();
     const queue = await this.getApprovalQueue();
     const seenPendingKeys = new Set<string>();
@@ -623,6 +941,21 @@ export const pharmacyService = {
    * Fetch pending approval queue requests, restoring persisted decisions from localStorage by ID.
    */
   async getApprovalQueue(): Promise<ApprovalRequest[]> {
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase
+        .from('approval_requests')
+        .select('*')
+        .order('submitted_at', { ascending: false });
+
+      if (!error && data) {
+        if (data.length > 0) {
+          return (data as DatabaseApprovalRequest[]).map(mapDatabaseApprovalToApprovalRequest);
+        }
+      } else if (error && error.code !== '42501' && !error.message.includes('permission denied')) {
+        throw new Error(`Supabase Database Error: ${error.message}`);
+      }
+    }
+
     await delay();
     const savedDecisions = getStoredApprovalDecisions();
     return inMemoryApprovals.map((req) => {
@@ -641,7 +974,7 @@ export const pharmacyService = {
   },
 
   /**
-   * Update an approval request status (Approve / Reject) and persist to versioned localStorage key.
+   * Update an approval request status (Approve / Reject) and persist via Supabase RPC or versioned localStorage key.
    * Prevents duplicate sign-offs on already decided items.
    */
   async updateApprovalDecision(
@@ -650,12 +983,26 @@ export const pharmacyService = {
     notes: string,
     decidedBy = 'Thaseen Taj (QA Lead Officer)'
   ): Promise<ApprovalRequest | null> {
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase.rpc('submit_approval_decision', {
+        p_request_id: approvalId,
+        p_decision: decision,
+        p_decision_notes: notes,
+      });
+
+      if (error) {
+        throw new Error(`Supabase RPC Error: ${error.message}`);
+      }
+
+      if (!data) return null;
+      return mapDatabaseApprovalToApprovalRequest(data as DatabaseApprovalRequest);
+    }
+
     await delay();
     const queue = await this.getApprovalQueue();
     const item = queue.find((a) => a.id === approvalId);
     if (!item) return null;
 
-    // Prevent duplicate sign-offs if already decided
     if (item.status !== 'pending') {
       return { ...item };
     }
@@ -669,7 +1016,6 @@ export const pharmacyService = {
       decidedBy,
     };
 
-    // Update in-memory approval queue
     const idx = inMemoryApprovals.findIndex((a) => a.id === approvalId);
     if (idx !== -1) {
       inMemoryApprovals[idx] = updatedItem;
@@ -677,7 +1023,6 @@ export const pharmacyService = {
       inMemoryApprovals.unshift(updatedItem);
     }
 
-    // Persist to versioned localStorage key
     saveStoredApprovalDecision({
       id: approvalId,
       status: decision,
@@ -686,7 +1031,6 @@ export const pharmacyService = {
       decisionNotes: notes,
     });
 
-    // Connect each action type to its correct effect when approved
     if (decision === 'approved' && item.batchId) {
       let targetStatus: BatchStatus | undefined;
       if (item.requestType === 'Quarantine Order' || item.title.toLowerCase().includes('quarantine')) {
@@ -768,4 +1112,3 @@ export const pharmacyService = {
     };
   },
 };
-
