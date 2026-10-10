@@ -193,6 +193,8 @@ export const RegisterBatchModal: React.FC<RegisterBatchModalProps> = ({
   // Form submission
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
+
     setErrors({});
     setScannerFeedback(null);
 

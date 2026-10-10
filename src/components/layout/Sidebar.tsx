@@ -8,6 +8,8 @@ import {
   CheckSquare,
   ShieldCheck,
   Building2,
+  LogOut,
+  UserCheck,
 } from 'lucide-react';
 import type { NavigationTab } from '../../types';
 
@@ -16,6 +18,9 @@ interface SidebarProps {
   onSelectTab: (tab: NavigationTab) => void;
   activeAlertsCount?: number;
   pendingApprovalsCount?: number;
+  userEmail?: string;
+  userRole?: string;
+  onSignOut?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -23,6 +28,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectTab,
   activeAlertsCount = 14,
   pendingApprovalsCount = 5,
+  userEmail,
+  userRole = 'qa_lead',
+  onSignOut,
 }) => {
   const navItems: {
     id: NavigationTab;
@@ -66,6 +74,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badgeVariant: 'warning',
     },
   ];
+
+  const displayName = userEmail ? userEmail.split('@')[0] : 'QA Officer';
 
   return (
     <aside className="w-64 bg-slate-900 text-slate-200 flex flex-col shrink-0 border-r border-slate-800 select-none min-h-screen">
@@ -166,18 +176,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* User / Persona Footer */}
-      <div className="p-4 border-t border-slate-800 flex items-center gap-3 bg-slate-950/40">
-        <div className="w-8 h-8 rounded-full bg-teal-800 flex items-center justify-center font-bold text-white text-xs">
-          TT
+      <div className="p-4 border-t border-slate-800 flex items-center justify-between gap-2 bg-slate-950/40">
+        <div className="flex items-center gap-2.5 truncate">
+          <div className="w-8 h-8 rounded-full bg-teal-800 flex items-center justify-center font-bold text-white text-xs shrink-0">
+            <UserCheck className="w-4 h-4 text-teal-200" />
+          </div>
+          <div className="truncate">
+            <p className="text-xs font-semibold text-white truncate">
+              {displayName}
+            </p>
+            <p className="text-[10px] text-teal-400 font-mono truncate">
+              Role: {userRole}
+            </p>
+          </div>
         </div>
-        <div className="truncate">
-          <p className="text-xs font-semibold text-white truncate">
-            Thaseen Taj
-          </p>
-          <p className="text-[10px] text-slate-400 truncate">
-            Frontend Lead (QA Console)
-          </p>
-        </div>
+        {onSignOut && (
+          <button
+            onClick={onSignOut}
+            className="p-1.5 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition-colors"
+            title="Sign Out"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        )}
       </div>
     </aside>
   );

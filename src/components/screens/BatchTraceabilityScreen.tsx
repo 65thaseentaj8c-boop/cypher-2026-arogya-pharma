@@ -117,7 +117,7 @@ export const BatchTraceabilityScreen: React.FC<BatchTraceabilityScreenProps> = (
           >
             {MOCK_BATCHES.map((b) => (
               <option key={b.id} value={b.id}>
-                {b.id} — {b.drugName} ({b.status.toUpperCase()})
+                {b.id} — {b.drugName} ({(b.status || 'RELEASED').toUpperCase()})
               </option>
             ))}
           </select>
@@ -711,12 +711,12 @@ export const BatchTraceabilityScreen: React.FC<BatchTraceabilityScreenProps> = (
           <div className="space-y-4 text-xs">
             <div className="p-3 bg-slate-50 rounded border border-slate-200 space-y-1">
               <span className="font-bold text-slate-900 block">Target: {currentBatch.drugName}</span>
-              <p className="text-slate-600">Current Status: {currentBatch.status.toUpperCase()} • Location: {currentBatch.currentWarehouse}</p>
+              <p className="text-slate-600">Current Status: {(currentBatch.status || 'RELEASED').toUpperCase()} • Location: {currentBatch.currentWarehouse}</p>
             </div>
             <p className="text-slate-700 leading-relaxed">
               {isB2231
                 ? 'Precautionary hold recommended on 180 warehouse units and customer notices for 640 dispatched units across 25 consignees. Replacement Batch B2240 (400 units) available in reserve.'
-                : `Batch ${currentBatch.id} is currently operating under status ${currentBatch.status.toUpperCase()}. No thermal or chemical deviations logged.`}
+                : `Batch ${currentBatch.id} is currently operating under status ${(currentBatch.status || 'RELEASED').toUpperCase()}. No thermal or chemical deviations logged.`}
             </p>
           </div>
         </Modal>

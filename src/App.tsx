@@ -1,4 +1,7 @@
 import { useState, useEffect } from 'react';
+import type { Session } from '@supabase/supabase-js';
+import { supabase, isSupabaseConfigured } from './lib/supabase';
+import { AuthScreen } from './components/auth/AuthScreen';
 import { Layout } from './components/layout/Layout';
 import { DashboardScreen } from './components/screens/DashboardScreen';
 import { BatchInventoryScreen } from './components/screens/BatchInventoryScreen';
@@ -20,6 +23,9 @@ import type {
 import { MOCK_METRICS } from './data/mockData';
 
 export function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+
   const [currentTab, setCurrentTab] = useState<NavigationTab>('dashboard');
   const [metrics, setMetrics] = useState<DashboardMetrics>(MOCK_METRICS);
   const [batches, setBatches] = useState<BatchItem[]>([]);
@@ -35,7 +41,30 @@ export function App() {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
+  // 1. Restore & listen to Supabase Auth Session
   useEffect(() => {
+    if (isSupabaseConfigured && supabase) {
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        setSession(session);
+        setIsAuthLoading(false);
+      });
+
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+        setSession(session);
+        setIsAuthLoading(false);
+      });
+
+      return () => subscription.unsubscribe();
+    } else {
+      setIsAuthLoading(false);
+    }
+  }, []);
+
+  // 2. Load pharmaceutical data after session validation
+  useEffect(() => {
+    if (isAuthLoading) return;
+    if (isSupabaseConfigured && !session) return;
+
     async function loadInitialData() {
       try {
         setIsLoading(true);
@@ -69,7 +98,15 @@ export function App() {
     }
 
     loadInitialData();
-  }, []);
+  }, [isAuthLoading, session]);
+
+  const handleSignOut = async () => {
+    if (isSupabaseConfigured && supabase) {
+      await supabase.auth.signOut();
+      setSession(null);
+      showToast('Signed out of QA Console session.');
+    }
+  };
 
   // Handle recommendation dispatch to QA queue
   const handleSubmitRecommendationToQA = async (rec: AIRecommendation) => {
@@ -79,7 +116,7 @@ export function App() {
         batchId: rec.batchId,
         title: `${rec.actionType}: ${rec.title}`,
         requestType: rec.actionType === 'Quarantine' ? 'Quarantine Order' : 'Recall Authorization',
-        submittedBy: 'AI Risk Agent (Auto-Dispatched)',
+        submittedBy: session?.user?.email || 'AI Risk Agent (Auto-Dispatched)',
         submittedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' IST',
         urgency: 'critical',
         summary: rec.rationale,
@@ -136,24 +173,34 @@ export function App() {
     decision: 'approved' | 'rejected',
     notes: string
   ) => {
-    const updated = await pharmacyService.updateApprovalDecision(id, decision, notes);
-    if (updated) {
-      setApprovals((prev) =>
-        prev.map((item) => (item.id === id ? { ...item, ...updated } : item))
-      );
+    try {
+      const userIdentifier = session?.user?.email
+        ? `${session.user.user_metadata?.full_name || session.user.email} (QA Lead)`
+        : 'Thaseen Taj (QA Lead Officer)';
 
-      const [updatedBatches, updatedMetrics] = await Promise.all([
-        pharmacyService.getBatches(),
-        pharmacyService.getDashboardMetrics(),
-      ]);
-      setBatches(updatedBatches);
-      setMetrics(updatedMetrics);
+      const updated = await pharmacyService.updateApprovalDecision(id, decision, notes, userIdentifier);
+      if (updated) {
+        setApprovals((prev) =>
+          prev.map((item) => (item.id === id ? { ...item, ...updated } : item))
+        );
 
-      showToast(
-        `Digital Sign-Off Recorded: Request ${id} was ${
-          decision === 'approved' ? 'AUTHORIZED' : 'REJECTED'
-        }.`
-      );
+        const [updatedBatches, updatedMetrics] = await Promise.all([
+          pharmacyService.getBatches(),
+          pharmacyService.getDashboardMetrics(),
+        ]);
+        setBatches(updatedBatches);
+        setMetrics(updatedMetrics);
+
+        showToast(
+          `Digital Sign-Off Recorded: Request ${id} was ${
+            decision === 'approved' ? 'AUTHORIZED' : 'REJECTED'
+          }.`
+        );
+      } else {
+        showToast(`Sign-off could not be completed for request ${id}.`);
+      }
+    } catch (err: any) {
+      showToast(`Sign-off Error: ${err.message || 'Operation failed'}`);
     }
   };
 
@@ -171,8 +218,25 @@ export function App() {
     showToast('Demo store & localStorage approval decisions reset to default seed state.');
   };
 
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-400 space-y-3">
+        <div className="animate-spin rounded-full h-8 w-8 border-3 border-teal-600 border-t-transparent" />
+        <p className="text-xs font-medium">Verifying QA session status...</p>
+      </div>
+    );
+  }
+
+  // Show AuthScreen if Supabase is unconfigured OR session is unauthenticated
+  if (!isSupabaseConfigured || !session) {
+    return <AuthScreen />;
+  }
+
   const activeAlertsCount = alerts.filter((a) => a.status === 'active' || a.status === 'investigating').length;
   const pendingApprovalsCount = approvals.filter((a) => a.status === 'pending').length;
+
+  const userEmail = session.user.email || '';
+  const userRole = (session.user.app_metadata?.app_role as string) || 'qa_lead';
 
   return (
     <Layout
@@ -180,6 +244,9 @@ export function App() {
       onSelectTab={setCurrentTab}
       activeAlertsCount={activeAlertsCount}
       pendingApprovalsCount={pendingApprovalsCount}
+      userEmail={userEmail}
+      userRole={userRole}
+      onSignOut={handleSignOut}
     >
       {/* Toast Notification */}
       {toastMessage && (
@@ -199,7 +266,7 @@ export function App() {
       {isLoading ? (
         <div className="flex flex-col items-center justify-center min-h-[400px] text-slate-500 space-y-3">
           <div className="animate-spin rounded-full h-8 w-8 border-3 border-teal-600 border-t-transparent" />
-          <p className="text-xs font-medium">Initializing pharmaceutical telemetry data feeds...</p>
+          <p className="text-xs font-medium font-sans">Initializing pharmaceutical telemetry data feeds...</p>
         </div>
       ) : (
         <>
@@ -253,6 +320,7 @@ export function App() {
               onNavigate={setCurrentTab}
               onSubmitToQA={handleSubmitRecommendationToQA}
               approvals={approvals}
+              batches={batches}
             />
           )}
 
