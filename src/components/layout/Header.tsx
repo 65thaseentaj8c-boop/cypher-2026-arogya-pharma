@@ -3,6 +3,8 @@ import { Radio, Database, LogOut, UserCheck } from 'lucide-react';
 import { DemoBadge } from '../common/DemoBadge';
 import type { NavigationTab } from '../../types';
 
+import { isSupabaseConfigured } from '../../lib/supabase';
+
 interface HeaderProps {
   currentTab: NavigationTab;
   onSelectTab: (tab: NavigationTab) => void;
@@ -46,6 +48,7 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   const currentInfo = titles[currentTab] || titles.dashboard;
+  const isLiveDB = isSupabaseConfigured && Boolean(userEmail);
 
   return (
     <header className="bg-white border-b border-slate-200 px-6 py-3.5 sticky top-0 z-20 shadow-xs">
@@ -56,7 +59,14 @@ export const Header: React.FC<HeaderProps> = ({
             <h2 className="text-lg font-bold text-slate-900 tracking-tight">
               {currentInfo.title}
             </h2>
-            <DemoBadge label="DEMO DATA" size="sm" />
+            {isLiveDB ? (
+              <span className="text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-300 px-2 py-0.5 rounded flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                LIVE DATABASE
+              </span>
+            ) : (
+              <DemoBadge label="DEMO DATA" size="sm" />
+            )}
           </div>
           <p className="text-xs text-slate-500 mt-0.5">{currentInfo.subtitle}</p>
         </div>

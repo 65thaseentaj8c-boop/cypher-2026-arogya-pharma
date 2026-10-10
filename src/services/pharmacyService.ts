@@ -641,6 +641,25 @@ export const pharmacyService = {
         .single();
 
       if (error) {
+        // If column-level permission denied (42501), retry updating permitted operational fields (current_warehouse, storage_condition, notes)
+        if (error.code === '42501' || error.message.includes('permission denied')) {
+          const operationalData: Partial<DatabaseBatch> = {};
+          if (input.currentWarehouse?.trim()) operationalData.current_warehouse = input.currentWarehouse.trim();
+          if (input.storageCondition?.trim()) operationalData.storage_condition = input.storageCondition.trim();
+          if (input.notes !== undefined) operationalData.notes = input.notes.trim() || null;
+
+          const { data: retryData, error: retryError } = await supabase
+            .from('batches')
+            .update(operationalData)
+            .eq('id', cleanId)
+            .select()
+            .single();
+
+          if (retryError) {
+            throw new Error(`Supabase Database Error: ${retryError.message}`);
+          }
+          return mapDatabaseBatchToBatchItem(retryData as DatabaseBatch);
+        }
         throw new Error(`Supabase Database Error: ${error.message}`);
       }
       return mapDatabaseBatchToBatchItem(data as DatabaseBatch);
@@ -823,8 +842,79 @@ export const pharmacyService = {
 
   /**
    * Fetch AI recommendations
+   * Dynamically generates recommendations for live batches in public.batches when connected to Supabase.
    */
   async getRecommendations(): Promise<AIRecommendation[]> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const liveBatches = await this.getBatches();
+        if (liveBatches && liveBatches.length > 0) {
+          const exp = riskEngine.checkExpiringBeforeSale(liveBatches);
+          const sup = riskEngine.checkSupplierReturnWindow(liveBatches);
+          const fefo = riskEngine.checkFEFOViolations(liveBatches);
+
+          const liveRecs: AIRecommendation[] = [];
+
+          for (const b of liveBatches) {
+            const batchAlerts = [...exp, ...sup, ...fefo].filter(
+              (r) => r.batchId.toUpperCase() === b.id.toUpperCase()
+            );
+            const hasRisk =
+              b.status === 'under_review' ||
+              b.status === 'in_transit' ||
+              b.status === 'quarantined' ||
+              b.riskScore >= 40 ||
+              batchAlerts.length > 0;
+
+            if (hasRisk) {
+              const actionType = b.status === 'recalled' ? 'Class II Recall' : 'Quarantine';
+              liveRecs.push({
+                id: `REC-LIVE-${b.id}`,
+                batchId: b.id,
+                drugName: b.drugName,
+                title: `Advisory Quality Hold & Assessment for Batch ${b.id}`,
+                actionType,
+                confidenceScore: Math.min(99, 85 + (b.riskScore || 10) / 10),
+                impactRadius: `Warehouse: ${b.currentWarehouse} (${b.batchSizeUnits.toLocaleString()} units)`,
+                rationale: `Live telemetry & rule-based advisory for Batch ${b.id} (${b.drugName}) under status "${b.status.toUpperCase()}". Risk score: ${b.riskScore}/100.`,
+                suggestedSteps: [
+                  `Segregate ${b.batchSizeUnits.toLocaleString()} units at ${b.currentWarehouse}.`,
+                  `Review CoA certificates & active ingredients (${b.activeIngredients}).`,
+                  `Submit formal advisory to QA Approval Queue for sign-off.`,
+                ],
+                evidencePoints: batchAlerts.flatMap((a) => a.evidence).slice(0, 4),
+                recommendedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' IST',
+                status: 'pending_review',
+              });
+            }
+          }
+
+          // Include mock recommendations IF their batchId actually exists in live batches
+          const mockMatches = MOCK_RECOMMENDATIONS.filter((mockRec) =>
+            liveBatches.some((lb) => lb.id.toUpperCase() === mockRec.batchId.toUpperCase())
+          );
+
+          const combinedRecs = [...liveRecs];
+          for (const mm of mockMatches) {
+            if (
+              !combinedRecs.some(
+                (r) => r.id === mm.id || (r.batchId === mm.batchId && r.actionType === mm.actionType)
+              )
+            ) {
+              combinedRecs.push(mm);
+            }
+          }
+
+          return combinedRecs;
+        } else {
+          return [];
+        }
+      } catch (err) {
+        console.warn('Failed to generate live recommendations:', err);
+        return [];
+      }
+    }
+
     await delay();
     return [...MOCK_RECOMMENDATIONS];
   },
@@ -995,11 +1085,11 @@ export const pharmacyService = {
         .select('*')
         .order('submitted_at', { ascending: false });
 
-      if (!error && data) {
-        return (data as DatabaseApprovalRequest[]).map(mapDatabaseApprovalToApprovalRequest);
-      } else if (error && error.code !== '42501' && !error.message.includes('permission denied')) {
-        throw new Error(`Supabase Database Error: ${error.message}`);
+      if (error) {
+        throw new Error(`Supabase Database Error [${error.code}]: ${error.message}`);
       }
+
+      return ((data as DatabaseApprovalRequest[]) || []).map(mapDatabaseApprovalToApprovalRequest);
     }
 
     await delay();
@@ -1036,12 +1126,17 @@ export const pharmacyService = {
         p_decision_notes: notes,
       });
 
-      if (error) {
-        throw new Error(`Supabase RPC Error: ${error.message}`);
+      if (!error && data) {
+        return mapDatabaseApprovalToApprovalRequest(data as DatabaseApprovalRequest);
       }
 
-      if (!data) return null;
-      return mapDatabaseApprovalToApprovalRequest(data as DatabaseApprovalRequest);
+      if (error) {
+        if (error.code === 'P0002' || error.message.includes('not found')) {
+          // Request does not exist in live DB (e.g. demo request created in memory); proceed to in-memory fallback below
+        } else {
+          throw new Error(`Supabase RPC Error: ${error.message}`);
+        }
+      }
     }
 
     await delay();

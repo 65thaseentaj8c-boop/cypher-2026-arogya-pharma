@@ -173,28 +173,34 @@ export function App() {
     decision: 'approved' | 'rejected',
     notes: string
   ) => {
-    const userIdentifier = session?.user?.email 
-      ? `${session.user.user_metadata?.full_name || session.user.email} (QA Lead)`
-      : 'Thaseen Taj (QA Lead Officer)';
+    try {
+      const userIdentifier = session?.user?.email
+        ? `${session.user.user_metadata?.full_name || session.user.email} (QA Lead)`
+        : 'Thaseen Taj (QA Lead Officer)';
 
-    const updated = await pharmacyService.updateApprovalDecision(id, decision, notes, userIdentifier);
-    if (updated) {
-      setApprovals((prev) =>
-        prev.map((item) => (item.id === id ? { ...item, ...updated } : item))
-      );
+      const updated = await pharmacyService.updateApprovalDecision(id, decision, notes, userIdentifier);
+      if (updated) {
+        setApprovals((prev) =>
+          prev.map((item) => (item.id === id ? { ...item, ...updated } : item))
+        );
 
-      const [updatedBatches, updatedMetrics] = await Promise.all([
-        pharmacyService.getBatches(),
-        pharmacyService.getDashboardMetrics(),
-      ]);
-      setBatches(updatedBatches);
-      setMetrics(updatedMetrics);
+        const [updatedBatches, updatedMetrics] = await Promise.all([
+          pharmacyService.getBatches(),
+          pharmacyService.getDashboardMetrics(),
+        ]);
+        setBatches(updatedBatches);
+        setMetrics(updatedMetrics);
 
-      showToast(
-        `Digital Sign-Off Recorded: Request ${id} was ${
-          decision === 'approved' ? 'AUTHORIZED' : 'REJECTED'
-        }.`
-      );
+        showToast(
+          `Digital Sign-Off Recorded: Request ${id} was ${
+            decision === 'approved' ? 'AUTHORIZED' : 'REJECTED'
+          }.`
+        );
+      } else {
+        showToast(`Sign-off could not be completed for request ${id}.`);
+      }
+    } catch (err: any) {
+      showToast(`Sign-off Error: ${err.message || 'Operation failed'}`);
     }
   };
 
@@ -314,6 +320,7 @@ export function App() {
               onNavigate={setCurrentTab}
               onSubmitToQA={handleSubmitRecommendationToQA}
               approvals={approvals}
+              batches={batches}
             />
           )}
 

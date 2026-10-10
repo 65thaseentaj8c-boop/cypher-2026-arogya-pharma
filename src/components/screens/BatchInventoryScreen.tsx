@@ -571,7 +571,7 @@ export const BatchInventoryScreen: React.FC<BatchInventoryScreenProps> = ({
                 >
                   {batches.map((b) => (
                     <option key={b.id} value={b.id}>
-                      {b.id} — {b.drugName} ({b.status.toUpperCase()})
+                      {b.id} — {b.drugName} ({(b.status || 'RELEASED').toUpperCase()})
                     </option>
                   ))}
                 </select>

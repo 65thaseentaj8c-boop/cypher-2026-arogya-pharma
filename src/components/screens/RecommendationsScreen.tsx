@@ -7,15 +7,17 @@ import {
   ShoppingCart,
   Sparkles,
 } from 'lucide-react';
-import type { AIRecommendation, ApprovalRequest, NavigationTab } from '../../types';
+import type { AIRecommendation, ApprovalRequest, BatchItem, NavigationTab } from '../../types';
 import { DemoBadge } from '../common/DemoBadge';
 import { Modal } from '../common/Modal';
+import { isSupabaseConfigured } from '../../lib/supabase';
 
 interface RecommendationsScreenProps {
   recommendations: AIRecommendation[];
   onNavigate: (tab: NavigationTab) => void;
   onSubmitToQA: (rec: AIRecommendation) => void;
   approvals?: ApprovalRequest[];
+  batches?: BatchItem[];
 }
 
 export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
@@ -23,6 +25,7 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
   onNavigate,
   onSubmitToQA,
   approvals = [],
+  batches = [],
 }) => {
   const [submittedIds, setSubmittedIds] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -31,6 +34,48 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
   const [poSupplier, setPoSupplier] = useState('Arogya Formulation Works (Ahmedabad Unit)');
   const [poNotes, setPoNotes] = useState('Urgent PO drafted due to B2231 recall and B2240 reserve deficit (400 units vs 940 units total demand). Hospital ICUs prioritized.');
   const [poSubmitted, setPoSubmitted] = useState(false);
+
+  const isBatchRegistered = (batchId: string) => {
+    if (!isSupabaseConfigured) return true;
+    if (!batches || batches.length === 0) return true;
+    return batches.some((b) => b.id.toUpperCase() === batchId.toUpperCase());
+  };
+
+  const recA = recommendations[0];
+  const recC = recommendations[1] || recommendations[0];
+
+  const isOptionABatchRegistered = recA ? isBatchRegistered(recA.batchId) : true;
+  const isOptionBBatchRegistered = isBatchRegistered('B2231');
+  const isOptionCBatchRegistered = recC ? isBatchRegistered(recC.batchId) : true;
+
+  const isOptionASubmitted = recA && isOptionABatchRegistered
+    ? submittedIds.includes(recA.id) ||
+      approvals.some(
+        (a) =>
+          a.status === 'pending' &&
+          (a.batchId || '').toUpperCase() === (recA.batchId || '').toUpperCase() &&
+          (a.requestType || '').toLowerCase().includes('quarantine')
+      )
+    : false;
+
+  const isOptionBSubmitted = isOptionBBatchRegistered && (
+    poSubmitted ||
+    approvals.some(
+      (a) =>
+        (a.batchId || '').toUpperCase() === 'B2231' &&
+        (a.title || '').toLowerCase().includes('urgent purchase order')
+    )
+  );
+
+  const isOptionCSubmitted = recC && isOptionCBatchRegistered
+    ? submittedIds.includes(recC.id) ||
+      approvals.some(
+        (a) =>
+          a.status === 'pending' &&
+          (a.batchId || '').toUpperCase() === (recC.batchId || '').toUpperCase() &&
+          (a.requestType || '').toLowerCase().includes('recall')
+      )
+    : false;
 
   const handleSubmit = async (rec: AIRecommendation) => {
     if (isSubmitting) return;
@@ -49,7 +94,7 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
     // Create an approval request for the PO
     const fakePoRec: AIRecommendation = {
       id: `PO-${Date.now().toString().slice(-4)}`,
-      batchId: 'B2231-PO',
+      batchId: 'B2231',
       drugName: 'Paracetamol Infusion IP (100ml / 1000mg)',
       title: `Urgent Purchase Order: ${poUnits} units of Paracetamol Infusion IP`,
       actionType: 'Dispatch Hold',
@@ -84,7 +129,14 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
             <span className="text-xs font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
               RULE-BASED EXPLAINABLE ADVISORIES
             </span>
-            <DemoBadge label="Demonstration Engine" size="sm" />
+            {isSupabaseConfigured ? (
+              <span className="text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-300 px-2 py-0.5 rounded flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                LIVE ADVISORY ENGINE
+              </span>
+            ) : (
+              <DemoBadge label="Demonstration Engine" size="sm" />
+            )}
           </div>
           <h3 className="text-xl font-bold text-slate-900 tracking-tight">
             Option Comparison & Strategic Recommendations
@@ -100,7 +152,7 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
             className="bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs px-3.5 py-2 rounded-md shadow-xs flex items-center gap-1.5 transition-colors"
           >
             <ShoppingCart className="w-3.5 h-3.5" />
-            Draft Urgent Purchase Order
+            {isOptionBSubmitted ? 'View Urgent PO Draft' : 'Draft Urgent Purchase Order'}
           </button>
           <button
             onClick={() => onNavigate('approvals')}
@@ -160,11 +212,11 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
           {/* Option A */}
           <div className="p-4 rounded-lg border-2 border-purple-200 bg-purple-50/30 space-y-3 flex flex-col justify-between">
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="bg-purple-700 text-white font-bold text-[10px] px-2 py-0.5 rounded uppercase">
+              <div className="flex flex-wrap items-center justify-between gap-1.5">
+                <span className="bg-purple-700 text-white font-bold text-[10px] px-2 py-0.5 rounded uppercase shrink-0">
                   Option A (Recommended Priority)
                 </span>
-                <span className="text-[10px] text-purple-800 font-bold">Suggested Allocation</span>
+                <span className="text-[10px] text-purple-800 font-bold shrink-0">Suggested Allocation</span>
               </div>
               <h5 className="font-bold text-sm text-slate-900">
                 Allocate B2240 (400 Units) Prioritizing Hospital ICUs
@@ -172,26 +224,45 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
               <p className="text-xs text-slate-600 leading-relaxed">
                 Suggested allocation: Reserve 280 units for Thane Civil Hospital (160) & Metro Apex Hospital (120) ICUs. Allocate remaining 120 units to top retail chemists.
               </p>
-              <div className="text-[11px] text-purple-900 bg-purple-100/60 p-2 rounded border border-purple-200 font-medium">
-                Hospital Priority: Suggested recommendation, NOT an automatic decision. Requires QA sign-off.
-              </div>
+              {!isOptionABatchRegistered ? (
+                <div className="text-[11px] text-amber-900 bg-amber-50 p-2 rounded border border-amber-200 font-medium flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                  <span>Batch {recA?.batchId} is not registered in the live database. Request submission disabled.</span>
+                </div>
+              ) : (
+                <div className="text-[11px] text-purple-900 bg-purple-100/60 p-2 rounded border border-purple-200 font-medium">
+                  Hospital Priority: Suggested recommendation, NOT an automatic decision. Requires QA sign-off.
+                </div>
+              )}
             </div>
             <button
-              onClick={() => handleSubmit(recommendations[0])}
-              className="w-full py-2 bg-purple-700 hover:bg-purple-800 text-white font-semibold text-xs rounded transition-colors"
+              onClick={() => recA && handleSubmit(recA)}
+              disabled={isSubmitting || isOptionASubmitted || !isOptionABatchRegistered}
+              className="w-full py-2 bg-purple-700 hover:bg-purple-800 disabled:bg-slate-200 disabled:text-slate-500 font-semibold text-xs rounded transition-colors flex items-center justify-center gap-1.5 text-white"
             >
-              Submit Option A to QA Queue
+              {!isOptionABatchRegistered ? (
+                `Demo Batch ${recA?.batchId} (Unregistered in Live DB)`
+              ) : isOptionASubmitted ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-purple-200" />
+                  Submitted to QA Queue
+                </>
+              ) : isSubmitting ? (
+                'Submitting...'
+              ) : (
+                'Submit Option A to QA Queue'
+              )}
             </button>
           </div>
 
           {/* Option B */}
           <div className="p-4 rounded-lg border-2 border-amber-200 bg-amber-50/30 space-y-3 flex flex-col justify-between">
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="bg-amber-600 text-white font-bold text-[10px] px-2 py-0.5 rounded uppercase">
+              <div className="flex flex-wrap items-center justify-between gap-1.5">
+                <span className="bg-amber-600 text-white font-bold text-[10px] px-2 py-0.5 rounded uppercase shrink-0">
                   Option B (Required Expansion)
                 </span>
-                <span className="text-[10px] text-amber-800 font-bold">Urgent Procurement</span>
+                <span className="text-[10px] text-amber-800 font-bold shrink-0">Urgent Procurement</span>
               </div>
               <h5 className="font-bold text-sm text-slate-900">
                 Draft Urgent Purchase Order (600 Units)
@@ -205,20 +276,27 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
             </div>
             <button
               onClick={() => setIsPoModalOpen(true)}
-              className="w-full py-2 bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs rounded transition-colors"
+              className="w-full py-2 bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs rounded transition-colors flex items-center justify-center gap-1.5"
             >
-              Draft & Open Urgent PO Modal
+              {isOptionBSubmitted ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-amber-200" />
+                  View / Edit Urgent PO Draft
+                </>
+              ) : (
+                'Draft & Open Urgent PO Modal'
+              )}
             </button>
           </div>
 
           {/* Option C */}
           <div className="p-4 rounded-lg border-2 border-slate-200 bg-slate-50 space-y-3 flex flex-col justify-between">
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="bg-slate-700 text-white font-bold text-[10px] px-2 py-0.5 rounded uppercase">
+              <div className="flex flex-wrap items-center justify-between gap-1.5">
+                <span className="bg-slate-700 text-white font-bold text-[10px] px-2 py-0.5 rounded uppercase shrink-0">
                   Option C (Secondary Contingency)
                 </span>
-                <span className="text-[10px] text-slate-600 font-bold">Supplier Return & Transfer</span>
+                <span className="text-[10px] text-slate-600 font-bold shrink-0">Supplier Return & Transfer</span>
               </div>
               <h5 className="font-bold text-sm text-slate-900">
                 Supplier Return Credit & Inter-Depot Transfer
@@ -226,15 +304,34 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
               <p className="text-xs text-slate-600 leading-relaxed">
                 File a formal Return Credit Note for the 180 warehouse units of B2231 and initiate inter-warehouse stock transfer of 300 units from Hyderabad WH-HYD-02.
               </p>
-              <div className="text-[11px] text-slate-700 bg-slate-200/60 p-2 rounded border border-slate-300 font-medium">
-                Provides financial recovery via supplier credit note.
-              </div>
+              {!isOptionCBatchRegistered ? (
+                <div className="text-[11px] text-amber-900 bg-amber-50 p-2 rounded border border-amber-200 font-medium flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                  <span>Batch {recC?.batchId} is not registered in the live database. Request submission disabled.</span>
+                </div>
+              ) : (
+                <div className="text-[11px] text-slate-700 bg-slate-200/60 p-2 rounded border border-slate-300 font-medium">
+                  Provides financial recovery via supplier credit note.
+                </div>
+              )}
             </div>
             <button
-              onClick={() => handleSubmit(recommendations[1] || recommendations[0])}
-              className="w-full py-2 bg-slate-800 hover:bg-slate-900 text-white font-semibold text-xs rounded transition-colors"
+              onClick={() => recC && handleSubmit(recC)}
+              disabled={isSubmitting || isOptionCSubmitted || !isOptionCBatchRegistered}
+              className="w-full py-2 bg-slate-800 hover:bg-slate-900 disabled:bg-slate-200 disabled:text-slate-500 font-semibold text-xs rounded transition-colors flex items-center justify-center gap-1.5 text-white"
             >
-              Submit Option C to QA Queue
+              {!isOptionCBatchRegistered ? (
+                `Demo Batch ${recC?.batchId} (Unregistered in Live DB)`
+              ) : isOptionCSubmitted ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-slate-300" />
+                  Submitted to QA Queue
+                </>
+              ) : isSubmitting ? (
+                'Submitting...'
+              ) : (
+                'Submit Option C to QA Queue'
+              )}
             </button>
           </div>
         </div>
@@ -244,12 +341,15 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
       <div className="space-y-5">
         {recommendations.map((rec) => {
           const targetType = rec.actionType === 'Quarantine' ? 'Quarantine Order' : 'Recall Authorization';
-          const existingPending = approvals.find(
-            (a) =>
-              a.status === 'pending' &&
-              a.batchId.toUpperCase() === rec.batchId.toUpperCase() &&
-              a.requestType.toLowerCase() === targetType.toLowerCase()
-          );
+          const isCardBatchRegistered = isBatchRegistered(rec.batchId);
+          const existingPending = isCardBatchRegistered
+            ? approvals.find(
+                (a) =>
+                  a.status === 'pending' &&
+                  a.batchId.toUpperCase() === rec.batchId.toUpperCase() &&
+                  a.requestType.toLowerCase() === targetType.toLowerCase()
+              )
+            : undefined;
           const isSubmitted = submittedIds.includes(rec.id) || !!existingPending;
 
           return (
@@ -272,6 +372,11 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
                   <span className="text-xs font-semibold text-slate-600">
                     {rec.drugName}
                   </span>
+                  {!isCardBatchRegistered && (
+                    <span className="text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-300 px-2 py-0.5 rounded">
+                      Demo Batch — Not Registered in Live DB
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -295,6 +400,15 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
                     Recommended on {rec.recommendedAt} • Scope: <strong className="text-slate-700">{rec.impactRadius}</strong>
                   </p>
                 </div>
+
+                {!isCardBatchRegistered && (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-md text-xs text-amber-950 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      Batch <strong>{rec.batchId}</strong> is a demo-only batch and is not registered in the live database. The request cannot be submitted to the live QA approval queue.
+                    </span>
+                  </div>
+                )}
 
                 {/* Evidence Points */}
                 {rec.evidencePoints && rec.evidencePoints.length > 0 && (
@@ -346,11 +460,15 @@ export const RecommendationsScreen: React.FC<RecommendationsScreenProps> = ({
                     ) : (
                       <button
                         onClick={() => handleSubmit(rec)}
-                        disabled={isSubmitting}
-                        className="bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white font-semibold text-xs px-4 py-2 rounded-md shadow-xs flex items-center gap-1.5 transition-colors"
+                        disabled={isSubmitting || !isCardBatchRegistered}
+                        className="bg-teal-700 hover:bg-teal-800 disabled:bg-slate-200 disabled:text-slate-500 text-white font-semibold text-xs px-4 py-2 rounded-md shadow-xs flex items-center gap-1.5 transition-colors"
                       >
                         <FileCheck2 className="w-4 h-4" />
-                        {isSubmitting ? 'Submitting...' : 'Submit Order to QA Approval Queue'}
+                        {!isCardBatchRegistered
+                          ? `Demo Batch ${rec.batchId} (Unregistered in Live DB)`
+                          : isSubmitting
+                          ? 'Submitting...'
+                          : 'Submit Order to QA Approval Queue'}
                       </button>
                     )}
                   </div>

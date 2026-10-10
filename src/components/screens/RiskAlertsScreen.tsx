@@ -26,12 +26,12 @@ export const RiskAlertsScreen: React.FC<RiskAlertsScreenProps> = ({
       return severityFilter === 'all' || alert.severity === severityFilter;
     }
     const matchesSearch =
-      alert.id.toLowerCase().includes(q) ||
-      alert.batchId.toLowerCase().includes(q) ||
-      alert.drugName.toLowerCase().includes(q) ||
-      alert.riskType.toLowerCase().includes(q) ||
-      alert.warehouse.toLowerCase().includes(q) ||
-      alert.description.toLowerCase().includes(q) ||
+      (alert.id || '').toLowerCase().includes(q) ||
+      (alert.batchId || '').toLowerCase().includes(q) ||
+      (alert.drugName || '').toLowerCase().includes(q) ||
+      (alert.riskType || '').toLowerCase().includes(q) ||
+      (alert.warehouse || '').toLowerCase().includes(q) ||
+      (alert.description || '').toLowerCase().includes(q) ||
       (alert.telemetrySummary && alert.telemetrySummary.toLowerCase().includes(q)) ||
       (alert.recommendedAction && alert.recommendedAction.toLowerCase().includes(q));
 

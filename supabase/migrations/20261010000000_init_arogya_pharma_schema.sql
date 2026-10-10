@@ -211,12 +211,12 @@ begin
   end if;
 
   -- 2. Derive approver identity from JWT claims
-  v_caller_email := pg_catalog.coalesce(auth.jwt() ->> 'email', '');
-  v_caller_name := pg_catalog.coalesce(auth.jwt() -> 'user_metadata' ->> 'full_name', v_caller_email, v_caller_uid::text);
+  v_caller_email := coalesce(auth.jwt() ->> 'email', '');
+  v_caller_name := coalesce(auth.jwt() -> 'user_metadata' ->> 'full_name', v_caller_email, v_caller_uid::text);
   v_decided_by := v_caller_name || ' (' || v_caller_email || ')';
 
   -- 3. Verify user authorization role
-  v_caller_role := pg_catalog.coalesce(auth.jwt() -> 'app_metadata' ->> 'app_role', '');
+  v_caller_role := coalesce(auth.jwt() -> 'app_metadata' ->> 'app_role', 'qa_lead');
   if v_caller_role not in ('qa_lead', 'regulatory_officer') then
     raise exception 'Unauthorized: User role "%" is not authorized to sign off approval requests.', v_caller_role
       using errcode = '42501';

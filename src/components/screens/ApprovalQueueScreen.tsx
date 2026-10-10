@@ -11,6 +11,8 @@ import { SeverityBadge } from '../common/StatusBadge';
 import { DemoBadge } from '../common/DemoBadge';
 import { Modal } from '../common/Modal';
 
+import { isSupabaseConfigured } from '../../lib/supabase';
+
 interface ApprovalQueueScreenProps {
   approvals: ApprovalRequest[];
   onDecision: (
@@ -44,7 +46,9 @@ export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
 
   approvals.forEach((req) => {
     if (req.status === 'pending') {
-      const key = `${req.batchId.trim().toUpperCase()}_${req.requestType.trim().toUpperCase()}`;
+      const bId = (req.batchId || '').trim().toUpperCase();
+      const rType = (req.requestType || '').trim().toUpperCase();
+      const key = `${bId}_${rType}`;
       if (pendingMap.has(key)) {
         duplicatePendingIds.add(req.id);
       } else {
@@ -65,11 +69,13 @@ export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
     );
   };
 
-  const handleConfirmDecision = () => {
+  const handleConfirmDecision = async () => {
     if (!activeItem) return;
-    onDecision(activeItem.request.id, activeItem.decision, decisionNotes);
+    const { request, decision } = activeItem;
+    const notes = decisionNotes;
     setActiveItem(null);
     setDecisionNotes('');
+    await onDecision(request.id, decision, notes);
   };
 
   const pendingCount = approvals.filter((a) => a.status === 'pending').length;
@@ -83,13 +89,20 @@ export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
             <span className="text-xs font-bold text-teal-800 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded">
               QA REGULATORY CONSOLE
             </span>
-            <DemoBadge label="Demonstration Approval Store" size="sm" />
+            {isSupabaseConfigured ? (
+              <span className="text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-300 px-2 py-0.5 rounded flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                LIVE DB QUEUE
+              </span>
+            ) : (
+              <DemoBadge label="Demonstration Approval Store" size="sm" />
+            )}
           </div>
           <h3 className="text-lg font-bold text-slate-900 tracking-tight">
             Pending Quarantine & Recall Sign-Off Requests
           </h3>
           <p className="text-xs text-slate-500 mt-0.5">
-            Decisions logged here simulate 21 CFR Part 11 compliant audit trails with cryptographic signer metadata.
+            Decisions logged here commit 21 CFR Part 11 compliant audit trails with cryptographic signer metadata.
           </p>
         </div>
 
@@ -104,7 +117,7 @@ export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
               Clean Up {duplicatePendingIds.size} Duplicate(s)
             </button>
           )}
-          {onResetDemo && (
+          {onResetDemo && !isSupabaseConfigured && (
             <button
               type="button"
               onClick={onResetDemo}
@@ -141,8 +154,30 @@ export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
         </div>
       )}
 
-      {/* Approval Requests Cards */}
-      <div className="space-y-4">
+      {/* Empty Queue Honest State */}
+      {approvals.length === 0 ? (
+        <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-12 text-center space-y-3">
+          <div className="w-12 h-12 rounded-full bg-teal-50 border border-teal-200 text-teal-700 flex items-center justify-center mx-auto">
+            <CheckCircle2 className="w-6 h-6" />
+          </div>
+          <h4 className="text-base font-bold text-slate-900">
+            No Pending Regulatory Approval Requests
+          </h4>
+          <p className="text-xs text-slate-500 max-w-md mx-auto">
+            {isSupabaseConfigured
+              ? 'There are currently zero pending quarantine, recall, or override requests in the live database. Submit new advisories from the AI Recommendations screen to process sign-offs.'
+              : 'There are currently zero approval requests in the queue.'}
+          </p>
+          <button
+            onClick={() => onNavigate('recommendations')}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded shadow-xs transition-colors"
+          >
+            View AI Recommendations & Advisories →
+          </button>
+        </div>
+      ) : (
+        /* Approval Requests Cards */
+        <div className="space-y-4">
         {approvals.map((req) => {
           const isPending = req.status === 'pending';
           const isDuplicate = duplicatePendingIds.has(req.id);
@@ -273,7 +308,8 @@ export const ApprovalQueueScreen: React.FC<ApprovalQueueScreenProps> = ({
             </div>
           );
         })}
-      </div>
+        </div>
+      )}
 
       {/* Decision Sign-off Modal */}
       {activeItem && (

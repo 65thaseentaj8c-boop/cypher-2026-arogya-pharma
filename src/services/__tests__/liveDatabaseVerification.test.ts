@@ -455,41 +455,124 @@ describe('Batch Registration & Live Inventory Fallback Tests', () => {
       vi.restoreAllMocks();
     });
 
-    it('updateApprovalDecision calls submit_approval_decision RPC enforcing server-side state transitions and audit logging', async () => {
+    it('getApprovalQueue throws error on database query failure instead of falling back to mock data', async () => {
+      const mockOrder = vi.fn().mockResolvedValue({
+        data: null,
+        error: { code: 'PGRST301', message: 'JWT expired' },
+      });
+      const mockSelect = vi.fn().mockReturnValue({ order: mockOrder });
+      const mockFrom = vi.fn().mockReturnValue({ select: mockSelect });
+
+      vi.spyOn(supabaseModule, 'isSupabaseConfigured', 'get').mockReturnValue(true);
+      vi.spyOn(supabaseModule, 'supabase', 'get').mockReturnValue({ from: mockFrom } as any);
+
+      await expect(pharmacyService.getApprovalQueue()).rejects.toThrow(
+        /Supabase Database Error \[PGRST301\]/
+      );
+
+      vi.restoreAllMocks();
+    });
+
+    it('addApprovalRequest catches duplicate constraint violation (code 23505) and throws duplicate error message', async () => {
+      const mockBatchSelect = vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'DEMO-B2401' }, error: null }),
+        }),
+      });
+
+      const mockInsertSingle = vi.fn().mockResolvedValue({
+        data: null,
+        error: { code: '23505', message: 'duplicate key value violates unique constraint' },
+      });
+
+      const mockApprovalInsert = vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({ single: mockInsertSingle }),
+      });
+
+      const mockFrom = vi.fn().mockImplementation((table: string) => {
+        if (table === 'batches') return { select: mockBatchSelect };
+        if (table === 'approval_requests') return { insert: mockApprovalInsert };
+        return {};
+      });
+
+      vi.spyOn(supabaseModule, 'isSupabaseConfigured', 'get').mockReturnValue(true);
+      vi.spyOn(supabaseModule, 'supabase', 'get').mockReturnValue({ from: mockFrom } as any);
+
+      const requestInput: ApprovalRequest = {
+        id: 'APP-8889',
+        batchId: 'DEMO-B2401',
+        title: 'Quarantine Order',
+        requestType: 'Quarantine Order',
+        submittedBy: 'qa.lead@arogyapharma.com',
+        submittedAt: '2026-10-10 08:00 IST',
+        urgency: 'critical',
+        summary: 'Duplicate test',
+        status: 'pending',
+      };
+
+      await expect(pharmacyService.addApprovalRequest(requestInput)).rejects.toThrow(
+        /Duplicate submission prevented/
+      );
+
+      vi.restoreAllMocks();
+    });
+
+    it('updateApprovalDecision throws error when RPC fails due to unauthorized role or invalid decision', async () => {
       const mockRpc = vi.fn().mockResolvedValue({
-        data: {
-          id: 'APP-101',
-          batch_id: 'DEMO-B2401',
-          title: 'Quarantine Order',
-          request_type: 'Quarantine Order',
-          submitted_by: 'QA Analyst',
-          submitted_at: '2026-10-09T10:00:00Z',
-          urgency: 'critical',
-          summary: 'Thermal excursion',
-          regulatory_reference: null,
-          status: 'approved',
-          decision_notes: 'Approved for dock hold',
-          decided_at: '2026-10-10T08:00:00Z',
-          decided_by: 'Thaseen Taj (qa.lead@arogyapharma.com)',
-        },
-        error: null,
+        data: null,
+        error: { code: '42501', message: 'Unauthorized: User role "warehouse_manager" is not authorized' },
       });
 
       vi.spyOn(supabaseModule, 'isSupabaseConfigured', 'get').mockReturnValue(true);
       vi.spyOn(supabaseModule, 'supabase', 'get').mockReturnValue({ rpc: mockRpc } as any);
 
-      const result = await pharmacyService.updateApprovalDecision(
-        'APP-101',
-        'approved',
-        'Approved for dock hold'
-      );
+      await expect(
+        pharmacyService.updateApprovalDecision('APP-101', 'approved', 'Unauthorized attempt')
+      ).rejects.toThrow(/Supabase RPC Error: Unauthorized/);
 
-      expect(mockRpc).toHaveBeenCalledWith('submit_approval_decision', {
-        p_request_id: 'APP-101',
-        p_decision: 'approved',
-        p_decision_notes: 'Approved for dock hold',
+      vi.restoreAllMocks();
+    });
+
+    it('getRecommendations dynamically generates advisories targeting live batches in public.batches', async () => {
+      const liveBatchRow = {
+        id: 'DEMO-B2401',
+        drug_name: 'Paracetamol Infusion IP',
+        product_sku: 'SKU-PCM-1000IV',
+        manufacturer_name: 'Arogya Formulation Works',
+        manufacturer_lot_number: 'LOT-DEMO-2026-B2401',
+        dosage_form: 'Intravenous Infusion (100ml)',
+        strength: '10 mg/ml',
+        batch_size_units: 10000,
+        received_quantity: 10000,
+        manufacturing_date: '2026-09-01',
+        expiry_date: '2028-09-01',
+        storage_condition: 'Controlled Room Temp',
+        current_warehouse: 'Bhiwandi Park WH-04',
+        status: 'under_review' as const,
+        risk_score: 50,
+        active_ingredients: 'Paracetamol IP',
+        barcode_value: '8901234567890',
+        qr_code_url: null,
+        registered_at: '2026-10-10 08:00:00+00',
+        notes: null,
+        estimated_monthly_sales_rate: null,
+        supplier_return_deadline: null,
+        supplier_return_policy_days: null,
+      };
+
+      const mockBatchSelect = vi.fn().mockResolvedValue({
+        data: [liveBatchRow],
+        error: null,
       });
-      expect(result?.status).toBe('approved');
+
+      const mockFrom = vi.fn().mockReturnValue({ select: mockBatchSelect });
+
+      vi.spyOn(supabaseModule, 'isSupabaseConfigured', 'get').mockReturnValue(true);
+      vi.spyOn(supabaseModule, 'supabase', 'get').mockReturnValue({ from: mockFrom } as any);
+
+      const recs = await pharmacyService.getRecommendations();
+      expect(recs.length).toBeGreaterThan(0);
+      expect(recs.some((r) => r.batchId === 'DEMO-B2401')).toBe(true);
 
       vi.restoreAllMocks();
     });
