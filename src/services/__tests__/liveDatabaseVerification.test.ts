@@ -3,8 +3,9 @@ import {
   pharmacyService,
   mapBatchItemToDatabaseBatchForInsert,
   mapDatabaseBatchToBatchItem,
+  mapApprovalRequestToDatabaseApprovalForInsert,
 } from '../pharmacyService';
-import type { RegisterBatchInput, BatchItem } from '../../types';
+import type { RegisterBatchInput, BatchItem, ApprovalRequest } from '../../types';
 import * as supabaseModule from '../../lib/supabase';
 
 describe('Batch Registration & Live Inventory Fallback Tests', () => {
@@ -253,6 +254,161 @@ describe('Batch Registration & Live Inventory Fallback Tests', () => {
       // Should fall back to inMemoryBatches demo data
       expect(result.length).toBeGreaterThan(0);
       expect(result.some((b) => b.id === 'B2231')).toBe(true);
+
+      vi.restoreAllMocks();
+    });
+  });
+
+  // Tests for Approval Requests Permission & Payload Verification
+  describe('approval_requests — Permissions & Insert Payload Compliance', () => {
+    it('mapApprovalRequestToDatabaseApprovalForInsert excludes status, submitted_at, and decision fields to adhere to column GRANT INSERT permissions', () => {
+      const sampleReq: ApprovalRequest = {
+        id: 'APP-9999',
+        batchId: 'B2231',
+        title: 'Quarantine Order — Batch B2231 Thermal Excursion',
+        requestType: 'Quarantine Order',
+        submittedBy: 'qa.lead@arogyapharma.com',
+        submittedAt: '2026-10-10 08:00 IST',
+        urgency: 'critical',
+        summary: 'Thermal excursion above spec',
+        regulatoryReference: 'CDSCO Schedule M Section 8.4',
+        status: 'pending',
+        decisionNotes: 'Pending review',
+        decidedAt: '2026-10-10 08:30 IST',
+        decidedBy: 'QA Approver',
+      };
+
+      const dbInsertPayload = mapApprovalRequestToDatabaseApprovalForInsert(sampleReq);
+
+      // Verify allowed columns for authenticated INSERT
+      expect(dbInsertPayload.id).toBe('APP-9999');
+      expect(dbInsertPayload.batch_id).toBe('B2231');
+      expect(dbInsertPayload.title).toBe('Quarantine Order — Batch B2231 Thermal Excursion');
+      expect(dbInsertPayload.request_type).toBe('Quarantine Order');
+      expect(dbInsertPayload.submitted_by).toBe('qa.lead@arogyapharma.com');
+      expect(dbInsertPayload.urgency).toBe('critical');
+      expect(dbInsertPayload.summary).toBe('Thermal excursion above spec');
+      expect(dbInsertPayload.regulatory_reference).toBe('CDSCO Schedule M Section 8.4');
+
+      // Verify restricted columns are strictly omitted
+      expect('status' in dbInsertPayload).toBe(false);
+      expect('submitted_at' in dbInsertPayload).toBe(false);
+      expect('decision_notes' in dbInsertPayload).toBe(false);
+      expect('decided_at' in dbInsertPayload).toBe(false);
+      expect('decided_by' in dbInsertPayload).toBe(false);
+    });
+
+    it('addApprovalRequest uses compliant insert payload when connected to Supabase', async () => {
+      const mockSingle = vi.fn().mockResolvedValue({
+        data: {
+          id: 'APP-8888',
+          batch_id: 'B2231',
+          title: 'Recall Order',
+          request_type: 'Recall Authorization',
+          submitted_by: 'qa.lead@arogyapharma.com',
+          submitted_at: '2026-10-10T08:00:00Z',
+          urgency: 'critical',
+          summary: 'Critical defect',
+          regulatory_reference: null,
+          status: 'pending',
+          decision_notes: null,
+          decided_at: null,
+          decided_by: null,
+        },
+        error: null,
+      });
+
+      const mockSelect = vi.fn().mockReturnValue({ single: mockSingle });
+      const mockInsert = vi.fn().mockReturnValue({ select: mockSelect });
+      const mockFrom = vi.fn().mockReturnValue({ insert: mockInsert });
+
+      vi.spyOn(supabaseModule, 'isSupabaseConfigured', 'get').mockReturnValue(true);
+      vi.spyOn(supabaseModule, 'supabase', 'get').mockReturnValue({ from: mockFrom } as any);
+
+      const requestInput: ApprovalRequest = {
+        id: 'APP-8888',
+        batchId: 'B2231',
+        title: 'Recall Order',
+        requestType: 'Recall Authorization',
+        submittedBy: 'qa.lead@arogyapharma.com',
+        submittedAt: '2026-10-10 08:00 IST',
+        urgency: 'critical',
+        summary: 'Critical defect',
+        status: 'pending',
+      };
+
+      const result = await pharmacyService.addApprovalRequest(requestInput);
+
+      expect(mockFrom).toHaveBeenCalledWith('approval_requests');
+      expect(mockInsert).toHaveBeenCalledWith([
+        {
+          id: 'APP-8888',
+          batch_id: 'B2231',
+          title: 'Recall Order',
+          request_type: 'Recall Authorization',
+          submitted_by: 'qa.lead@arogyapharma.com',
+          urgency: 'critical',
+          summary: 'Critical defect',
+          regulatory_reference: null,
+        },
+      ]);
+      expect(result.id).toBe('APP-8888');
+
+      vi.restoreAllMocks();
+    });
+
+    it('getApprovalQueue returns mapped live requests and returns empty array on zero rows without mock fallback', async () => {
+      const mockOrder = vi.fn().mockResolvedValue({
+        data: [],
+        error: null,
+      });
+      const mockSelect = vi.fn().mockReturnValue({ order: mockOrder });
+      const mockFrom = vi.fn().mockReturnValue({ select: mockSelect });
+
+      vi.spyOn(supabaseModule, 'isSupabaseConfigured', 'get').mockReturnValue(true);
+      vi.spyOn(supabaseModule, 'supabase', 'get').mockReturnValue({ from: mockFrom } as any);
+
+      const queue = await pharmacyService.getApprovalQueue();
+      expect(queue).toEqual([]);
+
+      vi.restoreAllMocks();
+    });
+
+    it('updateApprovalDecision calls submit_approval_decision RPC enforcing server-side state transitions and audit logging', async () => {
+      const mockRpc = vi.fn().mockResolvedValue({
+        data: {
+          id: 'APP-101',
+          batch_id: 'B2231',
+          title: 'Quarantine Order',
+          request_type: 'Quarantine Order',
+          submitted_by: 'QA Analyst',
+          submitted_at: '2026-10-09T10:00:00Z',
+          urgency: 'critical',
+          summary: 'Thermal excursion',
+          regulatory_reference: null,
+          status: 'approved',
+          decision_notes: 'Approved for dock hold',
+          decided_at: '2026-10-10T08:00:00Z',
+          decided_by: 'Thaseen Taj (qa.lead@arogyapharma.com)',
+        },
+        error: null,
+      });
+
+      vi.spyOn(supabaseModule, 'isSupabaseConfigured', 'get').mockReturnValue(true);
+      vi.spyOn(supabaseModule, 'supabase', 'get').mockReturnValue({ rpc: mockRpc } as any);
+
+      const result = await pharmacyService.updateApprovalDecision(
+        'APP-101',
+        'approved',
+        'Approved for dock hold'
+      );
+
+      expect(mockRpc).toHaveBeenCalledWith('submit_approval_decision', {
+        p_request_id: 'APP-101',
+        p_decision: 'approved',
+        p_decision_notes: 'Approved for dock hold',
+      });
+      expect(result?.status).toBe('approved');
 
       vi.restoreAllMocks();
     });

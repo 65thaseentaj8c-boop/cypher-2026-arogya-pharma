@@ -210,6 +210,27 @@ export function mapApprovalRequestToDatabaseApproval(req: ApprovalRequest): Data
   };
 }
 
+/**
+ * Maps an ApprovalRequest input to a DatabaseApprovalRequest payload strictly matching
+ * the column-level GRANT INSERT permissions on public.approval_requests for authenticated users.
+ * Omits status (DB default: 'pending'), submitted_at (DB default: now()), decision_notes,
+ * decided_at, decided_by, created_at, and updated_at.
+ */
+export function mapApprovalRequestToDatabaseApprovalForInsert(
+  req: Partial<ApprovalRequest>
+): Partial<DatabaseApprovalRequest> {
+  const db: Partial<DatabaseApprovalRequest> = {};
+  if (req.id !== undefined) db.id = req.id;
+  if (req.batchId !== undefined) db.batch_id = req.batchId;
+  if (req.title !== undefined) db.title = req.title;
+  if (req.requestType !== undefined) db.request_type = req.requestType;
+  if (req.submittedBy !== undefined) db.submitted_by = req.submittedBy;
+  if (req.urgency !== undefined) db.urgency = req.urgency;
+  if (req.summary !== undefined) db.summary = req.summary;
+  db.regulatory_reference = req.regulatoryReference || null;
+  return db;
+}
+
 export const APPROVAL_STORAGE_KEY = 'arogya_pharma_approval_decisions_v1';
 export const BATCH_STORAGE_KEY = 'arogya_pharma_batch_updates_v1';
 
@@ -814,7 +835,7 @@ export const pharmacyService = {
    */
   async addApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest> {
     if (isSupabaseConfigured && supabase) {
-      const dbReq = mapApprovalRequestToDatabaseApproval(request);
+      const dbReq = mapApprovalRequestToDatabaseApprovalForInsert(request);
       const { data, error } = await supabase
         .from('approval_requests')
         .insert([dbReq])
@@ -946,9 +967,7 @@ export const pharmacyService = {
         .order('submitted_at', { ascending: false });
 
       if (!error && data) {
-        if (data.length > 0) {
-          return (data as DatabaseApprovalRequest[]).map(mapDatabaseApprovalToApprovalRequest);
-        }
+        return (data as DatabaseApprovalRequest[]).map(mapDatabaseApprovalToApprovalRequest);
       } else if (error && error.code !== '42501' && !error.message.includes('permission denied')) {
         throw new Error(`Supabase Database Error: ${error.message}`);
       }
